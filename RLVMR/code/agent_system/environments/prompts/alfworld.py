@@ -20,6 +20,42 @@ You should first reason step-by-step about the current situation. This reasoning
 Once you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.
 """
 
+# ----------------- BDRS Runtime Templates -----------------
+ALFWORLD_TEMPLATE_NO_HIS_BDRS = """
+You are an expert agent operating in the ALFRED Embodied Environment.
+Your current observation is: {current_observation}
+Your admissible actions of the current situation are: [{admissible_actions}].
+
+Belief modules:
+- M_t (World Model), P_t (Task Progress), E_t (Exploration Map)
+
+Choose ONE mode and write one concise sentence:
+<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
+<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
+<EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
+<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+
+Then present the next action within <action> </action> tags.
+"""
+
+ALFWORLD_TEMPLATE_BDRS = """
+You are an expert agent operating in the ALFRED Embodied Environment. Your task is to: {task_description}
+Prior to this step, you have already taken {step_count} step(s). Below are the most recent {history_length} observaitons and the corresponding actions you took: {action_history}
+You are now at step {current_step} and your current observation is: {current_observation}
+Your admissible actions of the current situation are: [{admissible_actions}].
+
+Belief modules:
+- M_t (World Model), P_t (Task Progress), E_t (Exploration Map)
+
+Choose ONE mode and write one concise sentence:
+<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
+<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
+<EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
+<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+
+Then present the next action within <action> </action> tags.
+"""
+
 ALFWORLD_TEMPLATE_NO_HIS_NOTHINK = """
 You are an expert agent operating in the ALFRED Embodied Environment.
 Your current observation is: {current_observation}

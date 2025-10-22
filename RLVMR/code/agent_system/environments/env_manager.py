@@ -7,6 +7,7 @@ import os
 from agent_system.environments.prompts import *
 from agent_system.environments.base import EnvironmentManagerBase, to_numpy
 import copy
+from bdrs import BeliefStateManager
 
 def parse_gamefile(infos):
     gamefile = []
@@ -30,6 +31,7 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
     def __init__(self, envs, projection_f, env_name, config=None):
         self.buffers = None
         self.config = config
+        self.belief_mgr = BeliefStateManager(env_name)
         super().__init__(envs, projection_f, env_name)
 
     def reset(self):
@@ -46,6 +48,12 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         self.extract_task(text_obs)
 
         full_text_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands, init=True)
+        # initialize belief states with tasks
+        env_ids = list(range(len(text_obs)))
+        try:
+            self.belief_mgr.reset(env_ids=env_ids, task_desc=self.tasks)
+        except Exception:
+            self.belief_mgr.reset(env_ids=env_ids, task_desc=None)
         return {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}, infos
 
     def step(self, text_actions: List[str]):
@@ -63,6 +71,29 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
             info['action_available'] = to_numpy(action_available[i])
+            # update belief state per env and attach a light snapshot for debugging/analysis
+            try:
+                anchor_obs = text_obs[i]
+                self.belief_mgr.step_update(
+                    env_id=i,
+                    observation=anchor_obs,
+                    action=actions[i],
+                    info=info,
+                    reward=float(rewards[i]),
+                )
+                snap = self.belief_mgr.snapshot(i)
+                info['belief'] = {
+                    'step_idx': snap.step_idx,
+                    'world_model': snap.world_model,
+                    'task_progress': snap.task_progress,
+                    'exploration_map': {
+                        'visited_rooms': list(snap.exploration_map.get('visited_rooms', [])),
+                        'visited_objects': list(snap.exploration_map.get('visited_objects', [])),
+                    },
+                    'notes': snap.notes,
+                }
+            except Exception:
+                pass
         next_observations = {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)
@@ -83,15 +114,24 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         This function builds the text observation for the agent.
         """
         postprocess_text_obs = []
-        if self.meta_think:
+        use_bdrs_template = (
+            hasattr(self, 'config') and self.config is not None and
+            hasattr(self.config, 'algorithm') and hasattr(self.config.algorithm, 'bdrs') and
+            getattr(self.config.algorithm.bdrs, 'enable', False)
+        )
+        if self.meta_think and not use_bdrs_template:
             _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_MC
             _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_MC
-        elif self.config is not None and self.config.env.alfworld.action_only:
+        elif self.config is not None and self.config.env.alfworld.action_only and not use_bdrs_template:
             _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_NOTHINK
             _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_NOTHINK
         else:
-            _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS
-            _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE
+            if use_bdrs_template:
+                _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_BDRS
+                _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_BDRS
+            else:
+                _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS
+                _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE
 
         for i in range(len(text_obs)):
             # exclude 'help' in admissible_actions[i]
@@ -204,6 +244,7 @@ class SciWorldEnvironmentManager(EnvironmentManagerBase):
         self.config = config
         self.plannings = []
         self.meta_think = self.config is not None and self.config.env.sciworld.meta_think if hasattr(self.config.env, 'sciworld') and hasattr(self.config.env.sciworld, 'meta_think') else False
+        self.belief_mgr = BeliefStateManager(env_name)
         super().__init__(envs, projection_f, env_name)
 
     def reset(self):
@@ -219,6 +260,13 @@ class SciWorldEnvironmentManager(EnvironmentManagerBase):
         self.extract_task_descriptions(infos)
 
         full_text_obs = self.build_text_obs(text_obs, [info['available_actions'] for info in infos], init=True)
+        # initialize belief states with tasks
+        env_ids = list(range(len(text_obs)))
+        tasks = getattr(self, 'tasks', None)
+        try:
+            self.belief_mgr.reset(env_ids=env_ids, task_desc=tasks)
+        except Exception:
+            self.belief_mgr.reset(env_ids=env_ids, task_desc=None)
         return {'text': full_text_obs, 'anchor': text_obs}, infos
 
     def step(self, text_actions: List[str]):
@@ -253,6 +301,29 @@ class SciWorldEnvironmentManager(EnvironmentManagerBase):
             info['full_output'] = full_output[i]
             info['action_available'] = to_numpy(action_available[i])
             info['score'] = info.get('score', -1)
+            # update belief state and attach snapshot
+            try:
+                anchor_obs = text_obs[i]
+                self.belief_mgr.step_update(
+                    env_id=i,
+                    observation=anchor_obs,
+                    action=actions[i],
+                    info=info,
+                    reward=float(rewards[i]),
+                )
+                snap = self.belief_mgr.snapshot(i)
+                info['belief'] = {
+                    'step_idx': snap.step_idx,
+                    'world_model': snap.world_model,
+                    'task_progress': snap.task_progress,
+                    'exploration_map': {
+                        'visited_rooms': list(snap.exploration_map.get('visited_rooms', [])),
+                        'visited_objects': list(snap.exploration_map.get('visited_objects', [])),
+                    },
+                    'notes': snap.notes,
+                }
+            except Exception:
+                pass
 
         next_observations = {'text': full_text_obs, 'anchor': text_obs}
         rewards = to_numpy(rewards)
@@ -365,6 +436,7 @@ class SciWorldEnvironmentManager(EnvironmentManagerBase):
 class WebshopEnvironmentManager(EnvironmentManagerBase):
     def __init__(self, envs, projection_f, env_name):
         self.buffers = None
+        self.belief_mgr = BeliefStateManager(env_name)
         super().__init__(envs, projection_f, env_name)
     
     def reset(self) -> Dict[str, Any]:
@@ -381,6 +453,12 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
         if self.buffers is not None:
             self.buffers.clear()
         self.buffers = [[] for _ in range(len(infos))]
+        # initialize belief states with tasks
+        env_ids = list(range(len(infos)))
+        try:
+            self.belief_mgr.reset(env_ids=env_ids, task_desc=self.tasks)
+        except Exception:
+            self.belief_mgr.reset(env_ids=env_ids, task_desc=None)
         return observations, infos
 
     def step(self, text_actions: List[str]):
@@ -400,6 +478,29 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
         # add action_valid to infos
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
+            # update belief state and attach snapshot
+            try:
+                anchor_obs = self.pre_text_obs[i]
+                self.belief_mgr.step_update(
+                    env_id=i,
+                    observation=anchor_obs,
+                    action=actions[i],
+                    info=info,
+                    reward=float(rewards[i]),
+                )
+                snap = self.belief_mgr.snapshot(i)
+                info['belief'] = {
+                    'step_idx': snap.step_idx,
+                    'world_model': snap.world_model,
+                    'task_progress': snap.task_progress,
+                    'exploration_map': {
+                        'visited_rooms': list(snap.exploration_map.get('visited_rooms', [])),
+                        'visited_objects': list(snap.exploration_map.get('visited_objects', [])),
+                    },
+                    'notes': snap.notes,
+                }
+            except Exception:
+                pass
 
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)

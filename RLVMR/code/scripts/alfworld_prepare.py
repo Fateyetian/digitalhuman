@@ -98,7 +98,8 @@ meta_traj = []
 sft_data = []
 
 for traj in trajs[:NUM_TRAJS]:
-    prompt = ALFWORLD_TAGGING_TEMPLATE.format(traj=json.dumps(traj["traj"], ensure_ascii=False))
+    # 选择使用 BDRS 的标注模板（如需切换回 RLVMR，可改为 ALFWORLD_TAGGING_TEMPLATE）
+    prompt = ALFWORLD_TAGGING_TEMPLATE_BDRS.format(traj=json.dumps(traj["traj"], ensure_ascii=False))
     res = llm_json(prompt, MODEL)
     valid, res = merge(res, traj["traj"])
 
@@ -117,7 +118,8 @@ for traj in trajs[:NUM_TRAJS]:
         latest_planning = "No plan."
         for i, item in enumerate(res):
             if i == 0:
-                prompt = ALFWORLD_TEMPLATE_NO_HIS_CS.format(
+                # 使用 BDRS 无历史冷启动模板
+                prompt = ALFWORLD_TEMPLATE_NO_HIS_BDRS_CS.format(
                     current_observation=item["obs"],
                 )
             else:
@@ -126,7 +128,8 @@ for traj in trajs[:NUM_TRAJS]:
                 action_history += "\n- recent reasoning process: \n"
                 for j in range(i - history_think_length, i):
                     action_history += f"[Observation {j + 1}: {res[j]['obs']}, output: '{res[j]['reason']} <action>{res[j]['action']}</action>']\n"
-                prompt = ALFWORLD_TEMPLATE_CS.format(
+                # 使用 BDRS 冷启动模板（含历史）
+                prompt = ALFWORLD_TEMPLATE_BDRS_CS.format(
                     task_description=traj["task"],
                     step_count=i,
                     history_length=i,

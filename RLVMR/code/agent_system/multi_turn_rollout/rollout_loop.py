@@ -12,6 +12,7 @@ from agent_system.environments import EnvironmentManagerBase
 from typing import List, Dict, Tuple, Any, Optional, Union
 
 from rlvmr import core_rlvmr
+from bdrs.bdrs_rewards import BDRSRewardCalculator
 
 class TrajectoryCollector:
     def __init__(self, config, tokenizer: PreTrainedTokenizer, processor=None):
@@ -499,6 +500,40 @@ class TrajectoryCollector:
             total_batch_list = core_rlvmr.process_trajectory_rlvmr_rewards(
                 trajectory_list=total_batch_list, config=self.config, episode_rewards=total_episode_rewards
             )
+        # BDRS: 从 infos 中读取 belief，计算一步级内在奖励，写回 step 字段
+        if hasattr(self.config.algorithm, 'bdrs') and getattr(self.config.algorithm.bdrs, 'enable', False):
+            calc = BDRSRewardCalculator(
+                world_w=float(getattr(self.config.algorithm.bdrs, 'world_consistency_weight', 1.0)),
+                progress_w=float(getattr(self.config.algorithm.bdrs, 'task_progress_weight', 1.0)),
+                explore_w=float(getattr(self.config.algorithm.bdrs, 'exploration_efficiency_weight', 1.0)),
+            )
+            bdrs_world, bdrs_progress, bdrs_explore = [], [], []
+            for env_idx in range(len(total_batch_list)):
+                traj = total_batch_list[env_idx]
+                infos_seq = total_infos[env_idx]
+                for step_idx in range(len(traj)):
+                    step = traj[step_idx]
+                    if not step.get('active_masks', False):
+                        continue
+                    info = infos_seq[step_idx] if step_idx < len(infos_seq) else {}
+                    belief = info.get('belief', {})
+                    bdrs = calc.step_reward(belief=belief, info=info)
+                    step['bdrs_step_reward'] = torch.tensor(bdrs['total'])
+                    step['bdrs_components'] = bdrs
+                    bdrs_world.append(bdrs['world_consistency'])
+                    bdrs_progress.append(bdrs['task_progress'])
+                    bdrs_explore.append(bdrs['exploration_efficiency'])
+            # record simple statistics to meta_info
+            def _safe_stat(arr):
+                import numpy as _np
+                if len(arr) == 0:
+                    return {"mean": 0.0, "min": 0.0, "max": 0.0}
+                return {"mean": float(_np.mean(arr)), "min": float(_np.min(arr)), "max": float(_np.max(arr))}
+            self.config.meta_info_bdrs = {
+                "world_consistency": _safe_stat(bdrs_world),
+                "task_progress": _safe_stat(bdrs_progress),
+                "exploration_efficiency": _safe_stat(bdrs_explore),
+            }
 
         # Create trajectory data
         gen_batch_output: DataProto = self.gather_rollout_data(
@@ -512,4 +547,11 @@ class TrajectoryCollector:
         if self.config.algorithm.rlvmr.enable:
             gen_batch_output.meta_info["rlvmr_step_advantage_w"] = (self.config.algorithm.rlvmr.step_advantage_w)
             gen_batch_output.meta_info["rlvmr_mode"] = self.config.algorithm.rlvmr.mode
+        if hasattr(self.config.algorithm, 'bdrs') and getattr(self.config.algorithm.bdrs, 'enable', False):
+            gen_batch_output.meta_info["bdrs_step_advantage_w"] = float(getattr(self.config.algorithm.bdrs, 'step_advantage_w', 1.0))
+            gen_batch_output.meta_info["bdrs_mode"] = str(getattr(self.config.algorithm.bdrs, 'mode', 'mean_std_norm'))
+            if hasattr(self, 'config') and hasattr(self, 'config'):
+                stats = getattr(self, 'config').__dict__.get('meta_info_bdrs', None)
+                if stats is not None:
+                    gen_batch_output.meta_info['bdrs_stats'] = stats
         return gen_batch_output

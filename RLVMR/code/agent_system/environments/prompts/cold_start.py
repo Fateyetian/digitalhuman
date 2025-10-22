@@ -123,6 +123,63 @@ now the trajectory is as follows: {traj}
 """
 
 
+# ------------------- BDRS Cold Start Templates -------------------
+ALFWORLD_TEMPLATE_NO_HIS_BDRS_CS = """
+You are an expert agent operating in the ALFRED Embodied Environment.
+Your current observation is: {current_observation}
+
+You maintain three internal belief modules:
+- World Model (M_t): your factual beliefs about the environment.
+- Task Progress (P_t): your current subgoals and their statuses.
+- Exploration Map (E_t): where you have visited and what you have observed.
+
+Choose ONE mode based on beliefs and write one concise sentence:
+<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
+<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
+<EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
+<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+
+Then output the next action in <action> </action> tags.
+"""
+
+ALFWORLD_TEMPLATE_BDRS_CS = """
+You are an expert agent operating in the ALFRED Embodied Environment. Your task is to: {task_description}
+Prior to this step, you have already taken {step_count} step(s). Below are the most recent {history_length} observaitons and the corresponding actions you took: {action_history}
+You are now at step {current_step} and your current observation is: {current_observation}
+
+Your previous overall plan is: {planning}.
+
+You maintain three internal belief modules:
+- World Model (M_t): factual beliefs about the environment.
+- Task Progress (P_t): current subgoals and statuses.
+- Exploration Map (E_t): visited regions and observed objects.
+
+Choose ONE mode based on beliefs and write one concise sentence:
+<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
+<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
+<EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
+<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+
+Then output the next action in <action> </action> tags.
+"""
+
+ALFWORLD_TAGGING_TEMPLATE_BDRS = """
+You are an expert agent operating in the ALFRED Embodied Environment.  
+I will provide you with a successful trajectory. You need to supplement the belief-driven reasoning process.
+
+Choose ONE reasoning mode based on the agent's internal beliefs:
+
+<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
+<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
+<EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
+<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+
+Output a list in JSON with same length as the trajectory, each element:
+{"reason": "<EXECUTE>...your concise sentence...</EXECUTE>", "action": "..."}
+
+now the trajectory is as follows: {traj}
+"""
+
 SCIWORLD_TEMPLATE_NO_HIS_CS = """
 You are an expert agent operating in the ScienceWorld environment, which is a text-based virtual environment centered around accomplishing tasks from the elementary science curriculum.
 Your current task is: {task_description}

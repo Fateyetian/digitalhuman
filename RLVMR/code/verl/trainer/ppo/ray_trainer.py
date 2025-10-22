@@ -74,6 +74,7 @@ class AdvantageEstimator(str, Enum):
     RLOO = 'rloo'
     GiGPO = 'gigpo'
     RLVMR = 'rlvmr'
+    BDRS = 'bdrs'
 
 
 @dataclass
@@ -278,6 +279,30 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
         data.batch['returns'] = returns
         data.meta_info['episode_advantages'] = adv_details['episode_advantages']
         data.meta_info['step_advantages'] = adv_details['step_advantages']
+    elif adv_estimator == AdvantageEstimator.BDRS:
+        from bdrs.core_bdrs import compute_bdrs_outcome_advantage
+        if 'bdrs_step_reward' not in data.batch:
+            raise ValueError("BDRS rewards are not computed. Ensure bdrs_step_reward is added to batch.")
+        advantages, returns, adv_details = compute_bdrs_outcome_advantage(
+            token_level_rewards=data.batch['token_level_rewards'],
+            bdrs_rewards=data.batch['bdrs_step_reward'],
+            eos_mask=data.batch['response_mask'],
+            index=data.non_tensor_batch['uid'],
+            step_advantage_w=float(data.meta_info.get('bdrs_step_advantage_w', 1.0)),
+            mode=str(data.meta_info.get('bdrs_mode', 'mean_std_norm')),
+        )
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['episode_advantages'] = adv_details['episode_advantages']
+        data.meta_info['step_advantages'] = adv_details['step_advantages']
+        # 记录 BDRS 指标到 WandB
+        if 'bdrs_stats' in data.meta_info:
+            bdrs_stats = data.meta_info['bdrs_stats']
+            for key, stat in bdrs_stats.items():
+                if isinstance(stat, dict) and 'mean' in stat:
+                    data.meta_info[f'bdrs_{key}_mean'] = stat['mean']
+                    data.meta_info[f'bdrs_{key}_min'] = stat['min']
+                    data.meta_info[f'bdrs_{key}_max'] = stat['max']
     else:
         raise NotImplementedError
     return data

@@ -192,6 +192,13 @@ algorithm:
     reflection_reward: 1.0 
     step_advantage_w: 0.5
     mode: "mean_std_norm"  # "mean_norm" or "mean_std_norm"
+  bdrs:
+    enable: False
+    world_consistency_weight: 1.0
+    task_progress_weight: 1.0
+    exploration_efficiency_weight: 1.0
+    step_advantage_w: 1.0
+    mode: "mean_std_norm"
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10
