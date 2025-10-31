@@ -32,6 +32,7 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         self.buffers = None
         self.config = config
         self.belief_mgr = BeliefStateManager(env_name)
+        self.prev_beliefs = {}  # 保存上一步的belief快照，用于差分奖励计算
         super().__init__(envs, projection_f, env_name)
 
     def reset(self):
@@ -54,6 +55,10 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
             self.belief_mgr.reset(env_ids=env_ids, task_desc=self.tasks)
         except Exception:
             self.belief_mgr.reset(env_ids=env_ids, task_desc=None)
+
+        # 清空prev_beliefs（开始新的episode）
+        self.prev_beliefs.clear()
+
         return {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}, infos
 
     def step(self, text_actions: List[str]):
@@ -71,6 +76,12 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
             info['action_available'] = to_numpy(action_available[i])
+
+            # 保存当前belief作为prev_belief（在更新之前）
+            prev_belief_snap = None
+            if i in self.prev_beliefs:
+                prev_belief_snap = self.prev_beliefs[i]
+
             # update belief state per env and attach a light snapshot for debugging/analysis
             try:
                 anchor_obs = text_obs[i]
@@ -81,19 +92,32 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                     info=info,
                     reward=float(rewards[i]),
                 )
-                snap = self.belief_mgr.snapshot(i)
+                curr_belief_snap = self.belief_mgr.snapshot(i)
+
+                # 将完整的exploration_map传递（包括差分信息）
                 info['belief'] = {
-                    'step_idx': snap.step_idx,
-                    'world_model': snap.world_model,
-                    'task_progress': snap.task_progress,
-                    'exploration_map': {
-                        'visited_rooms': list(snap.exploration_map.get('visited_rooms', [])),
-                        'visited_objects': list(snap.exploration_map.get('visited_objects', [])),
-                    },
-                    'notes': snap.notes,
+                    'step_idx': curr_belief_snap.step_idx,
+                    'world_model': curr_belief_snap.world_model,
+                    'task_progress': curr_belief_snap.task_progress,
+                    'exploration_map': curr_belief_snap.exploration_map,  # 传递完整的exploration_map
+                    'notes': curr_belief_snap.notes,
                 }
-            except Exception:
-                pass
+
+                # 传递prev_belief用于差分奖励计算
+                info['prev_belief'] = prev_belief_snap
+
+                # 保存当前belief作为下一步的prev_belief
+                self.prev_beliefs[i] = {
+                    'step_idx': curr_belief_snap.step_idx,
+                    'world_model': copy.deepcopy(curr_belief_snap.world_model),
+                    'task_progress': copy.deepcopy(curr_belief_snap.task_progress),
+                    'exploration_map': copy.deepcopy(curr_belief_snap.exploration_map),
+                    'notes': curr_belief_snap.notes[:],
+                }
+            except Exception as e:
+                # 出错时也要确保有默认值
+                info['belief'] = {}
+                info['prev_belief'] = None
         next_observations = {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)

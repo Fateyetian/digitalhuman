@@ -194,11 +194,21 @@ algorithm:
     mode: "mean_std_norm"  # "mean_norm" or "mean_std_norm"
   bdrs:
     enable: False
+    # 三种奖励的基础权重（用于加权求和）
     world_consistency_weight: 1.0
-    task_progress_weight: 1.0
-    exploration_efficiency_weight: 1.0
+    task_progress_weight: 2.0
+    exploration_efficiency_weight: 0.5
+    # Step advantage在总advantage中的权重
     step_advantage_w: 1.0
+    # 归一化模式
     mode: "mean_std_norm"
+    # 差分奖励的细粒度系数
+    reward_correct_belief: 0.2         # 修正一个错误信念的奖励
+    reward_new_conflict: -0.1          # 产生一个新冲突的惩罚
+    reward_subgoal_complete: 0.5       # 完成一个子目标的奖励
+    reward_new_entity: 0.05            # 发现新对象的奖励
+    reward_new_location: 0.1           # 访问新房间的奖励
+    penalty_revisit: -0.02             # 重复访问的惩罚
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10
