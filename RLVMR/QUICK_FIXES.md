@@ -323,7 +323,135 @@ env.alfworld.meta_think=True \
 `code/examples/bdrs_trainer/quick_verify.sh` (第92行)
 
 ### Commit
-`(待提交)` - Fix: Add missing env.alfworld.action_only configuration
+`7582134` - Fix: Add missing action_only config with + prefix for struct mode
+
+---
+
+## 修复8：NameError - total_infos未定义
+
+### 错误信息
+```
+NameError: name 'total_infos' is not defined
+  File "agent_system/multi_turn_rollout/rollout_loop.py", line 523, in multi_turn_loop
+    infos_seq = total_infos[env_idx]
+```
+
+### 根本原因
+BDRS奖励计算代码（第523行）需要访问 `total_infos[env_idx]` 来获取环境返回的belief状态信息。
+
+但是：
+- `total_infos` 在 `vanilla_multi_turn_loop` 中定义（第312行）并填充（第373行）
+- `vanilla_multi_turn_loop` 没有返回这个变量
+- `dynamic_multi_turn_loop` 也没有收集和返回这个变量
+- 导致 `multi_turn_loop` 中的BDRS代码无法访问
+
+### 修复方案
+修改 `rollout_loop.py` 的函数签名，在整个调用链中传递 `total_infos`：
+
+**修改位置1**：`vanilla_multi_turn_loop` 返回值（第392行）
+```python
+# 修改前：
+return total_batch_list, episode_rewards, episode_lengths, success, traj_uid
+
+# 修改后：
+return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, total_infos
+```
+
+**修改位置2**：`dynamic_multi_turn_loop` 初始化（第422行）
+```python
+# 添加：
+total_infos_list = []
+```
+
+**修改位置3**：`dynamic_multi_turn_loop` 收集（第451行）
+```python
+# 添加：
+total_infos_list += infos_list
+```
+
+**修改位置4**：`dynamic_multi_turn_loop` 返回值（第458行）
+```python
+# 修改前：
+return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid
+
+# 修改后：
+return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_infos_list
+```
+
+**修改位置5**：`multi_turn_loop` 接收返回值（第482、490行）
+```python
+# 修改前：
+total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
+    self.dynamic_multi_turn_loop(...)
+
+# 修改后：
+total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_infos = \
+    self.dynamic_multi_turn_loop(...)
+```
+
+### 文件位置
+`code/agent_system/multi_turn_rollout/rollout_loop.py` (多处修改)
+
+### Commit
+`c68099b` - Fix: Return total_infos from rollout functions for BDRS belief tracking
+
+---
+
+## 修复9：ConfigAttributeError - 无法添加config属性（提前修复）
+
+### 潜在错误
+```
+omegaconf.errors.ConfigAttributeError: Key 'meta_info_bdrs' is not in struct
+    full_key: meta_info_bdrs
+```
+
+### 根本原因
+在 `rollout_loop.py:562`，代码尝试给config对象添加新属性：
+```python
+self.config.meta_info_bdrs = {...}
+```
+
+但是 `ray_trainer.py:559` 启用了OmegaConf struct模式：
+```python
+OmegaConf.set_struct(self.config, True)
+```
+
+struct模式下不允许添加未在schema中定义的新属性。
+
+### 修复方案
+使用局部变量而不是config属性来存储BDRS统计信息。
+
+**修改位置1**：定义统计信息（第562-568行）
+```python
+# 修改前：
+self.config.meta_info_bdrs = {
+    "world_consistency": _safe_stat(bdrs_world),
+    ...
+}
+
+# 修改后：
+meta_info_bdrs = {
+    "world_consistency": _safe_stat(bdrs_world),
+    ...
+}
+```
+
+**修改位置2**：传递统计信息（第586-588行）
+```python
+# 修改前：
+if hasattr(self.config, 'meta_info_bdrs'):
+    gen_batch_output.meta_info['bdrs_stats'] = self.config.meta_info_bdrs
+
+# 修改后：
+if 'meta_info_bdrs' in locals():
+    gen_batch_output.meta_info['bdrs_stats'] = meta_info_bdrs
+```
+
+### 文件位置
+`code/agent_system/multi_turn_rollout/rollout_loop.py` (第562-568行、第586-588行)
+
+### Commit
+`f8e110d` - Fix: Avoid ConfigAttributeError by using local variable instead of config attribute
 
 ---
 
@@ -425,7 +553,9 @@ python3 -m examples.data_preprocess.prepare \
 
 | 日期 | Commit | 描述 |
 |------|--------|------|
-| 2025-10-31 | (待提交) | 修复7: 添加缺失的action_only配置 |
+| 2025-10-31 | f8e110d | 修复9: 避免ConfigAttributeError（使用局部变量代替config属性）|
+| 2025-10-31 | c68099b | 修复8: 返回total_infos以支持BDRS belief追踪 |
+| 2025-10-31 | 7582134 | 修复7: 添加action_only配置（使用+前缀）|
 | 2025-10-31 | abb02f7 | 修复6: 禁用flash_attn（只设置use_remove_padding=False）|
 | 2025-10-31 | 8ed084e | 优化: 降低batch size为4适配2-GPU服务器 |
 | 2025-10-31 | 37c1504 | 修复5: 调整GPU数量为2匹配服务器配置 |
