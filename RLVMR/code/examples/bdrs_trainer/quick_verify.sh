@@ -7,7 +7,7 @@ ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # === 验证配置：极小规模，快速运行 ===
-train_data_size=4        # 只用4个训练样本
+train_data_size=8        # 只用8个训练样本（必须能被GPU数整除）
 val_data_size=8          # 只用8个验证样本
 group_size=2             # 分组大小降到2
 total_epochs=2           # 只训练2个epoch
