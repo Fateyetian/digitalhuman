@@ -389,7 +389,7 @@ class TrajectoryCollector:
                     episode_lengths=episode_lengths,
                     )
 
-        return total_batch_list, episode_rewards, episode_lengths, success, traj_uid
+        return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, total_infos
 
     def dynamic_multi_turn_loop(
             self,
@@ -419,6 +419,7 @@ class TrajectoryCollector:
         total_episode_lengths = []
         total_success = []
         total_traj_uid = []
+        total_infos_list = []
         try_count: int = 0
         max_try_count = self.config.algorithm.filter_groups.max_num_gen_batches
 
@@ -428,7 +429,7 @@ class TrajectoryCollector:
                 print(f"valid num={len(total_batch_list)} < target num={self.config.data.train_batch_size * self.config.env.rollout.n}. Keep generating... ({try_count}/{max_try_count})")
             try_count += 1
 
-            batch_list, episode_rewards, episode_lengths, success, traj_uid = self.vanilla_multi_turn_loop(
+            batch_list, episode_rewards, episode_lengths, success, traj_uid, infos_list = self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
@@ -441,19 +442,20 @@ class TrajectoryCollector:
                                                                                                 config=self.config,
                                                                                                 last_try=(try_count == max_try_count),
                                                                                                 )
-            
+
             total_batch_list += batch_list
             total_episode_rewards.append(episode_rewards)
             total_episode_lengths.append(episode_lengths)
             total_success.append(success)
             total_traj_uid.append(traj_uid)
+            total_infos_list += infos_list
 
         total_episode_rewards = np.concatenate(total_episode_rewards, axis=0)
         total_episode_lengths = np.concatenate(total_episode_lengths, axis=0)
         total_success = {key: np.concatenate([success[key] for success in total_success], axis=0) for key in total_success[0].keys()}
         total_traj_uid = np.concatenate(total_traj_uid, axis=0)
 
-        return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid
+        return total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_infos_list
 
     def multi_turn_loop(
             self,
@@ -477,15 +479,15 @@ class TrajectoryCollector:
         # Initial observations from the environment
         if self.config.algorithm.filter_groups.enable and is_train:
             # Dynamic Sampling (for DAPO and Dynamic GiGPO)
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_infos = \
                 self.dynamic_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
                 envs=envs,
             )
         else:
-            # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid = \
+            # Vanilla Sampling
+            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, total_infos = \
                 self.vanilla_multi_turn_loop(
                 gen_batch=gen_batch,
                 actor_rollout_wg=actor_rollout_wg,
