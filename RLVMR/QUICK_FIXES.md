@@ -213,7 +213,73 @@ trainer.n_gpus_per_node=2 \
 `code/examples/bdrs_trainer/quick_verify.sh` (第96行)
 
 ### Commit
-`(待提交)` - Fix: Adjust n_gpus_per_node to 2 for actual server configuration
+`37c1504` - Fix: Adjust n_gpus_per_node to 2 for actual server configuration
+
+---
+
+## 修复6：ImportError - flash_attn兼容性问题
+
+### 错误信息
+```
+ImportError: /root/miniconda3/lib/python3.10/site-packages/flash_attn_2_cuda.cpython-310-x86_64-linux-gnu.so:
+undefined symbol: _ZN3c105ErrorC2ENS_14SourceLocationENSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE
+```
+
+### 根本原因
+flash_attn是预编译的CUDA扩展，存在ABI兼容性问题：
+- flash_attn编译时使用的PyTorch版本与当前环境不匹配
+- C++ ABI符号无法解析
+- 这是常见的预编译扩展版本不匹配问题
+
+### 修复方案
+
+#### 方案1：禁用flash_attn（推荐，最快）
+
+修改 `quick_verify.sh`，禁用flash_attn和remove_padding：
+
+**修改位置**：`code/examples/bdrs_trainer/quick_verify.sh` (第63-64行)
+
+**修改前**：
+```bash
+actor_rollout_ref.model.use_remove_padding=True \
+```
+
+**修改后**：
+```bash
+actor_rollout_ref.model.use_remove_padding=False \
+```
+
+**说明**：
+- 只需设置 `use_remove_padding=False` 即可
+- `enable_flash_attn` 配置项不存在于配置schema中
+- 禁用remove_padding会自动避免使用flash_attn依赖的功能
+- 使用PyTorch原生SDPA（Scaled Dot-Product Attention）
+- 对于1.5B小模型和验证任务，性能差异可忽略
+
+#### 方案2：重新安装flash_attn（耗时）
+
+如果需要flash_attn的性能优势：
+
+```bash
+# 卸载旧版本
+pip uninstall flash-attn -y
+
+# 从源码重新编译（需要30分钟-1小时）
+pip install flash-attn --no-build-isolation
+
+# 或者安装预编译版本（可能仍有兼容性问题）
+pip install flash-attn==2.5.8
+```
+
+#### 方案3：升级PyTorch（不推荐）
+
+可能引入其他兼容性问题，不建议在验证阶段尝试。
+
+### 文件位置
+`code/examples/bdrs_trainer/quick_verify.sh` (第63-64行)
+
+### Commit
+`67fab84` - Fix: Disable flash_attn to avoid ABI compatibility issues
 
 ---
 
@@ -315,7 +381,9 @@ python3 -m examples.data_preprocess.prepare \
 
 | 日期 | Commit | 描述 |
 |------|--------|------|
-| 2025-10-31 | (待提交) | 修复5: 调整GPU数量为2匹配服务器配置 |
+| 2025-10-31 | 67fab84 | 修复6: 禁用flash_attn避免ABI兼容性问题 |
+| 2025-10-31 | 8ed084e | 优化: 降低batch size为4适配2-GPU服务器 |
+| 2025-10-31 | 37c1504 | 修复5: 调整GPU数量为2匹配服务器配置 |
 | 2025-10-31 | 15a32a7 | 修复3+4: 修正batch size和rollout.n配置 |
 | 2025-10-31 | 643a818 | 修复2: 添加BDRS到advantage estimator列表 |
 | 2025-10-31 | 15a8e35 | 修复1: 移除不存在的函数导入 |
