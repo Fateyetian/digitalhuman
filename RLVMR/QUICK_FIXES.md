@@ -137,7 +137,7 @@ train_data_size=8        # 只用8个训练样本（必须能被GPU数整除）
 `code/examples/bdrs_trainer/quick_verify.sh` (第10行)
 
 ### Commit
-`d34aa19` → `(待重新提交)` - Fix: Increase train_data_size to 8 for GPU divisibility
+`15a32a7` - Fix: Correct batch size configuration for verl+env mode
 
 ---
 
@@ -170,6 +170,50 @@ assert config.actor_rollout_ref.rollout.n == 1
 
 ### Commit
 合并到修复3 - Fix: Increase train_data_size to 8 and keep rollout.n=1
+
+---
+
+## 修复5：ValueError - GPU数量不匹配
+
+### 错误信息
+```
+ValueError: Total available GPUs 2.0 is less than total desired GPUs 8
+```
+
+### 根本原因
+`quick_verify.sh` 配置了 `trainer.n_gpus_per_node=8`，但服务器实际只有2个GPU可用。
+
+在 `ray_trainer.py:121` 的资源检查中：
+```python
+if total_available_gpus < total_required_gpus:
+    raise ValueError(f"Total available GPUs {total_available_gpus} is less than total desired GPUs {total_required_gpus}")
+```
+
+### 修复方案
+将 `trainer.n_gpus_per_node` 从8改为2，匹配服务器实际GPU数量。
+
+**修改位置**：`code/examples/bdrs_trainer/quick_verify.sh` (第96行)
+
+**修改前**：
+```bash
+trainer.n_gpus_per_node=8 \
+```
+
+**修改后**：
+```bash
+trainer.n_gpus_per_node=2 \
+```
+
+**验证batch size兼容性**：
+- `train_batch_size = 8`
+- `n_gpus = 2`
+- `8 % 2 == 0` ✓
+
+### 文件位置
+`code/examples/bdrs_trainer/quick_verify.sh` (第96行)
+
+### Commit
+`(待提交)` - Fix: Adjust n_gpus_per_node to 2 for actual server configuration
 
 ---
 
@@ -271,8 +315,8 @@ python3 -m examples.data_preprocess.prepare \
 
 | 日期 | Commit | 描述 |
 |------|--------|------|
-| 2025-10-31 | (待提交) | 修复3+4: 修正batch size和rollout.n配置 |
-| 2025-10-31 | d34aa19 | (已废弃) 错误的修复尝试 |
+| 2025-10-31 | (待提交) | 修复5: 调整GPU数量为2匹配服务器配置 |
+| 2025-10-31 | 15a32a7 | 修复3+4: 修正batch size和rollout.n配置 |
 | 2025-10-31 | 643a818 | 修复2: 添加BDRS到advantage estimator列表 |
 | 2025-10-31 | 15a8e35 | 修复1: 移除不存在的函数导入 |
 | 2025-10-31 | e52d874 | 初始BDRS实现 |

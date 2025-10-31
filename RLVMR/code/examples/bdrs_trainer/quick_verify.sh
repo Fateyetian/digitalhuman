@@ -93,7 +93,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['console'] \
     trainer.project_name='BDRS_Verify' \
     trainer.experiment_name='bdrs_quick_verify' \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.resume_mode=disable \
     trainer.save_freq=-1 \
