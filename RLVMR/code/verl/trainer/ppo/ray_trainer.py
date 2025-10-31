@@ -369,7 +369,7 @@ class RayPPOTrainer(object):
             self.use_critic = True
         elif self.config.algorithm.adv_estimator in [
                 AdvantageEstimator.GRPO, AdvantageEstimator.REINFORCE_PLUS_PLUS, AdvantageEstimator.REMAX,
-                AdvantageEstimator.RLOO, AdvantageEstimator.GiGPO, AdvantageEstimator.RLVMR
+                AdvantageEstimator.RLOO, AdvantageEstimator.GiGPO, AdvantageEstimator.RLVMR, AdvantageEstimator.BDRS
         ]:
             self.use_critic = False
         else:
