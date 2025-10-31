@@ -89,6 +89,7 @@ python3 -m verl.trainer.main_ppo \
     env.rollout.n=$group_size \
     env.alfworld.generalization_level=0 \
     env.alfworld.meta_think=True \
+    +env.alfworld.action_only=False \
     trainer.critic_warmup=0 \
     trainer.logger=['console'] \
     trainer.project_name='BDRS_Verify' \

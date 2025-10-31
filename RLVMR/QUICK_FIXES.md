@@ -276,10 +276,54 @@ pip install flash-attn==2.5.8
 可能引入其他兼容性问题，不建议在验证阶段尝试。
 
 ### 文件位置
-`code/examples/bdrs_trainer/quick_verify.sh` (第63-64行)
+`code/examples/bdrs_trainer/quick_verify.sh` (第63行)
 
 ### Commit
-`67fab84` - Fix: Disable flash_attn to avoid ABI compatibility issues
+`abb02f7` - Fix: Disable flash_attn by setting use_remove_padding=False
+
+---
+
+## 修复7：ConfigAttributeError - 缺失action_only配置
+
+### 错误信息
+```
+omegaconf.errors.ConfigAttributeError: Key 'action_only' is not in struct
+    full_key: env.alfworld.action_only
+    object_type=dict
+```
+
+### 根本原因
+在 `env_manager.py:149`，代码尝试访问 `self.config.env.alfworld.action_only` 配置项：
+```python
+elif self.config is not None and self.config.env.alfworld.action_only and not use_bdrs_template:
+    _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_NOTHINK
+    _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_NOTHINK
+```
+
+但 `quick_verify.sh` 中没有提供这个配置项。
+
+### 修复方案
+在 `quick_verify.sh` 中使用 `+` 前缀添加 `action_only` 配置（绕过struct mode限制）。
+
+**修改位置**：`code/examples/bdrs_trainer/quick_verify.sh` (第92行插入)
+
+**添加**：
+```bash
+env.alfworld.meta_think=True \
++env.alfworld.action_only=False \
+```
+
+**重要说明**：
+- 使用 `+` 前缀是Hydra的语法，用于添加未在schema中定义的配置项
+- `action_only=False` 表示使用完整的observation模板（包含思考过程）
+- 与 `meta_think=True` 配合，使用带有元认知的完整模板
+- 这是BDRS推荐的设置，提供更丰富的上下文信息
+
+### 文件位置
+`code/examples/bdrs_trainer/quick_verify.sh` (第92行)
+
+### Commit
+`(待提交)` - Fix: Add missing env.alfworld.action_only configuration
 
 ---
 
@@ -381,7 +425,8 @@ python3 -m examples.data_preprocess.prepare \
 
 | 日期 | Commit | 描述 |
 |------|--------|------|
-| 2025-10-31 | 67fab84 | 修复6: 禁用flash_attn避免ABI兼容性问题 |
+| 2025-10-31 | (待提交) | 修复7: 添加缺失的action_only配置 |
+| 2025-10-31 | abb02f7 | 修复6: 禁用flash_attn（只设置use_remove_padding=False）|
 | 2025-10-31 | 8ed084e | 优化: 降低batch size为4适配2-GPU服务器 |
 | 2025-10-31 | 37c1504 | 修复5: 调整GPU数量为2匹配服务器配置 |
 | 2025-10-31 | 15a32a7 | 修复3+4: 修正batch size和rollout.n配置 |
