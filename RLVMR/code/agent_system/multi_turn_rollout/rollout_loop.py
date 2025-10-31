@@ -559,7 +559,8 @@ class TrajectoryCollector:
                     "std": float(_np.std(arr))
                 }
 
-            self.config.meta_info_bdrs = {
+            # 不能直接给config添加属性（struct mode），先保存到临时变量
+            meta_info_bdrs = {
                 "world_consistency": _safe_stat(bdrs_world),
                 "task_progress": _safe_stat(bdrs_progress),
                 "exploration_efficiency": _safe_stat(bdrs_explore),
@@ -582,7 +583,7 @@ class TrajectoryCollector:
         if hasattr(self.config.algorithm, 'bdrs') and getattr(self.config.algorithm.bdrs, 'enable', False):
             gen_batch_output.meta_info["bdrs_step_advantage_w"] = float(getattr(self.config.algorithm.bdrs, 'step_advantage_w', 1.0))
             gen_batch_output.meta_info["bdrs_mode"] = str(getattr(self.config.algorithm.bdrs, 'mode', 'mean_std_norm'))
-            # 传递BDRS统计信息
-            if hasattr(self.config, 'meta_info_bdrs'):
-                gen_batch_output.meta_info['bdrs_stats'] = self.config.meta_info_bdrs
+            # 传递BDRS统计信息（从局部变量读取，避免struct mode冲突）
+            if 'meta_info_bdrs' in locals():
+                gen_batch_output.meta_info['bdrs_stats'] = meta_info_bdrs
         return gen_batch_output
