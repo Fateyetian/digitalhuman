@@ -129,17 +129,31 @@ You are an expert agent operating in the ALFRED Embodied Environment.
 Your current observation is: {current_observation}
 
 You maintain three internal belief modules:
-- World Model (M_t): your factual beliefs about the environment.
-- Task Progress (P_t): your current subgoals and their statuses.
-- Exploration Map (E_t): where you have visited and what you have observed.
+- M_t (World Model): factual beliefs about objects, locations, states, and interaction history.
+  Example: {{"microwave": "closed", "apple 1": "on countertop 1"}}
+- P_t (Task Progress): current goal, subgoals, and their completion status.
+  Example: {{"goal": "heat apple", "subgoal": "place apple in microwave", "status": "incomplete"}}
+- E_t (Exploration Map): visited/unvisited regions and unexplored containers.
+  Example: {{"visited": ["kitchen"], "unexplored": ["pantry"]}}
 
-Choose ONE mode based on beliefs and write one concise sentence:
-<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
-<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
+Choose ONE mode and write one concise intent (≤20 words):
+<PLAN>Formulate or modify subgoals based on P_t and M_t.</PLAN>
+<EXECUTE>Complete current subgoal using credible knowledge in M_t.</EXECUTE>
 <EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
-<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+<VERIFY>Challenge and correct possibly wrong beliefs in M_t.</VERIFY>
+
+Mode-Action Alignment:
+- <PLAN>: enabling actions for first steps
+- <EXECUTE>: goal-advancing actions (take / put / use / heat / cool / clean)
+- <EXPLORE>: information-gaining actions (open / go to)
+- <VERIFY>: assumption-testing actions
 
 Then output the next action in <action> </action> tags.
+
+Example:
+Observation: You are in a kitchen. On the countertop 1, you see an apple 1.
+<EXECUTE>Acquire the apple to advance toward the goal.</EXECUTE>
+<action>take apple 1 from countertop 1</action>
 """
 
 ALFWORLD_TEMPLATE_BDRS_CS = """
@@ -150,34 +164,53 @@ You are now at step {current_step} and your current observation is: {current_obs
 Your previous overall plan is: {planning}.
 
 You maintain three internal belief modules:
-- World Model (M_t): factual beliefs about the environment.
-- Task Progress (P_t): current subgoals and statuses.
-- Exploration Map (E_t): visited regions and observed objects.
+- M_t (World Model): factual beliefs about objects, locations, states, and interaction history.
+- P_t (Task Progress): current goal, subgoals, and their completion status.
+- E_t (Exploration Map): visited/unvisited regions and unexplored containers.
 
-Choose ONE mode based on beliefs and write one concise sentence:
-<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
-<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
+Choose ONE mode and write one concise intent (≤20 words):
+<PLAN>Formulate or modify subgoals based on P_t and M_t.</PLAN>
+<EXECUTE>Complete current subgoal using credible knowledge in M_t.</EXECUTE>
 <EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
-<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+<VERIFY>Challenge and correct possibly wrong beliefs in M_t.</VERIFY>
+
+Mode-Action Alignment:
+- <PLAN>: enabling actions for first steps
+- <EXECUTE>: goal-advancing actions (take / put / use / heat / cool / clean)
+- <EXPLORE>: information-gaining actions (open / go to)
+- <VERIFY>: assumption-testing actions
 
 Then output the next action in <action> </action> tags.
 """
 
 ALFWORLD_TAGGING_TEMPLATE_BDRS = """
-You are an expert agent operating in the ALFRED Embodied Environment.  
+You are an expert agent operating in the ALFRED Embodied Environment.
 I will provide you with a successful trajectory. You need to supplement the belief-driven reasoning process.
+
+You maintain three internal belief modules:
+- M_t (World Model): factual beliefs about the environment
+- P_t (Task Progress): current subgoals and statuses
+- E_t (Exploration Map): visited regions and observed objects
 
 Choose ONE reasoning mode based on the agent's internal beliefs:
 
-<PLAN>Review P_t and M_t, formulate or modify subgoals.</PLAN>
-<EXECUTE>Use credible knowledge in M_t to complete a pending subgoal in P_t.</EXECUTE>
-<EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas.</EXPLORE>
-<VERIFY>Challenge and correct a possibly wrong belief in M_t.</VERIFY>
+<PLAN>Formulate or modify subgoals based on P_t and M_t. Use this when establishing initial plans or replanning.</PLAN>
+<EXECUTE>Complete current subgoal using credible knowledge in M_t. Use this when executing known actions toward clear subgoals.</EXECUTE>
+<EXPLORE>Gather new information when M_t lacks key facts or E_t shows unknown areas. Use this when facing uncertainty or missing information.</EXPLORE>
+<VERIFY>Challenge and correct possibly wrong beliefs in M_t. Use this when previous assumptions may be incorrect.</VERIFY>
 
-Output a list in JSON with same length as the trajectory, each element:
-{"reason": "<EXECUTE>...your concise sentence...</EXECUTE>", "action": "..."}
+Output a list in JSON format with same length as the trajectory. Each element should contain:
+{{"reason": "<MODE>Your concise sentence explaining the belief-driven reasoning...</MODE>", "action": "the exact action from trajectory"}}
 
-now the trajectory is as follows: {traj}
+Example output format:
+```json
+[{{"reason": "<EXPLORE>Need to search for the book, which may be in the cabinet or shelf based on E_t.</EXPLORE>", "action": "go to shelf 1"}},
+{{"reason": "<EXECUTE>According to M_t, the book is on the shelf. Complete the subgoal by taking it.</EXECUTE>", "action": "take book 1 from shelf 1"}}]
+```
+
+The "action" field must match the action in the trajectory exactly, and the "reason" field should be inferred from the context of previous and next actions.
+
+Now the trajectory is as follows: {traj}
 """
 
 SCIWORLD_TEMPLATE_NO_HIS_CS = """
