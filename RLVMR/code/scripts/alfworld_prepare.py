@@ -6,17 +6,17 @@ import json
 from agent_system.environments.prompts import *
 import re
 import random
-import openai
 import argparse
 import os
 from pathlib import Path
+from openai import OpenAI
 
 
 # ============================================================
 # Configuration Section - Modify these values
 # ============================================================
-DEFAULT_API_KEY = "YOUR_OPENAI_API_KEY"  # Or set via command line: --api_key
-DEFAULT_MODEL = "gpt-4o"  # Options: "gpt-4o", "gpt-4o-mini"
+DEFAULT_API_KEY = "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV"  # Or set via command line: --api_key
+DEFAULT_MODEL = "aws:claude-3-5-sonnet-20241022"  # Options: "gpt-4o", "gpt-4o-mini"
 DEFAULT_NUM_TRAJS = 300
 DEFAULT_SAVE_PATH = "data/alfworld_cold-start.json"
 DEFAULT_DATASET_PATH = "data/alfworld_expert_traj"
@@ -46,15 +46,16 @@ def parse_args():
 args = parse_args()
 
 # Set API key priority: command line > environment variable > default
+api_key = None
 if args.api_key:
-    openai.api_key = args.api_key
+    api_key = args.api_key.strip()
 elif os.getenv("OPENAI_API_KEY"):
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY").strip()
 else:
-    openai.api_key = DEFAULT_API_KEY
+    api_key = DEFAULT_API_KEY.strip()
 
 # Validate API key
-if openai.api_key == "YOUR_OPENAI_API_KEY" or not openai.api_key.startswith("sk-"):
+if api_key == "YOUR_OPENAI_API_KEY" or not api_key.startswith("sk-"):
     print("\n" + "="*60)
     print("ERROR: Invalid OpenAI API Key")
     print("="*60)
@@ -64,6 +65,12 @@ if openai.api_key == "YOUR_OPENAI_API_KEY" or not openai.api_key.startswith("sk-
     print("3. Edit script: DEFAULT_API_KEY = 'sk-your-key'")
     print("="*60 + "\n")
     exit(1)
+
+# Initialize OpenAI client (new API v1.x+)
+client = OpenAI(
+    api_key=api_key,
+    base_url="https://api.yourapi.cn/v1"
+)
 
 MODEL = args.model
 NUM_TRAJS = args.num_trajs
@@ -119,30 +126,49 @@ def llm(prompt, model, temperature=0.0, max_tokens=1024, retries=3):
     return None
 
 def llm_json(prompt, model, temperature=0.0, max_tokens=1024, retries=5):
+    """Call OpenAI API and parse JSON response"""
     for attempt in range(retries):
         try:
-            response = openai.ChatCompletion.create(
+            # New OpenAI API (v1.x+)
+            response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
                 max_tokens=max_tokens
             )
-            content = response['choices'][0]['message']['content'].replace("```json", "").replace("```", "").strip()
-            return json.loads(content)
+            content = response.choices[0].message.content
+
+            # Parse JSON
+            content = content.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(content)
+            return parsed
+        except json.JSONDecodeError as e:
+            print(f"JSON Parse Error: {e}. Retrying... (Attempt {attempt + 1}/{retries})")
+            print(f"Raw content (first 200 chars): {content[:200] if 'content' in locals() else 'N/A'}")
+            time.sleep(2 ** attempt)
         except Exception as e:
             print(f"Error: {e}. Retrying... (Attempt {attempt + 1}/{retries})")
             time.sleep(2 ** attempt)
-    
+
     return []
 
 
 def merge(res, traj):
+    # Check if res is valid
+    if not isinstance(res, list):
+        print(f"Invalid response type: expected list, got {type(res)}")
+        return False, None
+
+    if len(res) == 0:
+        print(f"Empty response from LLM")
+        return False, None
+
     if (len(res) != len(traj)):
         print(f"Length mismatch: {len(res)} vs {len(traj)}")
         return False, None
 
-    if "action" not in res[0] or "reason" not in res[0]:
-        print("Missing 'action' or 'reason' in the response structure.")
+    if not isinstance(res[0], dict) or "action" not in res[0] or "reason" not in res[0]:
+        print(f"Missing 'action' or 'reason' in the response structure. First item: {res[0]}")
         return False, None
     
     output = []
