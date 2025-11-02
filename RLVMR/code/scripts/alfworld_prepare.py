@@ -138,13 +138,27 @@ def llm_json(prompt, model, temperature=0.0, max_tokens=1024, retries=5):
             )
             content = response.choices[0].message.content
 
-            # Parse JSON
+            # Clean up content
             content = content.replace("```json", "").replace("```", "").strip()
-            parsed = json.loads(content)
+
+            # Find the first '[' or '{' to locate JSON start
+            json_start = -1
+            for i, char in enumerate(content):
+                if char == '[' or char == '{':
+                    json_start = i
+                    break
+
+            if json_start == -1:
+                raise json.JSONDecodeError("No JSON found in response", content, 0)
+
+            # Extract JSON part
+            json_content = content[json_start:]
+            parsed = json.loads(json_content)
             return parsed
+
         except json.JSONDecodeError as e:
             print(f"JSON Parse Error: {e}. Retrying... (Attempt {attempt + 1}/{retries})")
-            print(f"Raw content (first 200 chars): {content[:200] if 'content' in locals() else 'N/A'}")
+            print(f"Raw content (first 300 chars): {content[:300] if 'content' in locals() else 'N/A'}")
             time.sleep(2 ** attempt)
         except Exception as e:
             print(f"Error: {e}. Retrying... (Attempt {attempt + 1}/{retries})")
