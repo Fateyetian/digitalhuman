@@ -586,6 +586,7 @@ class RayPPOTrainer(object):
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
     def _validate(self):
+        print("[DEBUG] >>> 进入 _validate() 方法")
         reward_tensor_lst = []
         data_source_lst = []
         success_rate_dict = {}
@@ -595,7 +596,18 @@ class RayPPOTrainer(object):
         sample_outputs = []
         sample_scores = []
 
+        print(f"[DEBUG] 检查 val_dataloader:")
+        print(f"[DEBUG]   - 类型: {type(self.val_dataloader)}")
+        print(f"[DEBUG]   - 是否为空: {self.val_dataloader is None}")
+
+        iteration_count = 0
+        print("[DEBUG] 开始遍历 val_dataloader...")
+
         for test_data in self.val_dataloader:
+            iteration_count += 1
+            print(f"[DEBUG] >>> Iteration {iteration_count}: 获得数据批次")
+            print(f"[DEBUG]   - test_data keys: {test_data.keys() if isinstance(test_data, dict) else 'not a dict'}")
+
             test_batch = DataProto.from_single_dict(test_data)
 
             # repeat test batch
@@ -632,13 +644,19 @@ class RayPPOTrainer(object):
             print(f'test_gen_batch meta info: {test_gen_batch.meta_info}')
 
             ################ agent-environment loop ###############
+            print("[DEBUG] >>> 准备调用 multi_turn_loop...")
+            print(f"[DEBUG]   - gen_batch size: {len(test_gen_batch.batch['input_ids'])}")
+            print(f"[DEBUG]   - actor_rollout_wg: {self.actor_rollout_wg}")
+            print(f"[DEBUG]   - val_envs: {self.val_envs}")
+            print("[DEBUG] >>> 开始 multi_turn_loop (这一步会初始化 vLLM)...")
+
             test_output_gen_batch = self.traj_collector.multi_turn_loop(
                                                     gen_batch=test_gen_batch,
                                                     actor_rollout_wg=self.actor_rollout_wg,
                                                     envs=self.val_envs,
                                                     is_train=False,
                                                     )
-            print('validation generation end')
+            print('[DEBUG] ✓ validation generation end')
             del test_batch
             test_batch = test_output_gen_batch
             # Store generated outputs
@@ -889,13 +907,33 @@ class RayPPOTrainer(object):
         self.global_steps = 0
 
         # load checkpoint before doing anything
+        print("=" * 80)
+        print("[DEBUG] 步骤1: 开始加载 checkpoint...")
+        print("=" * 80)
         self._load_checkpoint()
+        print("[DEBUG] ✓ Checkpoint 加载完成")
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
+        print("=" * 80)
+        print(f"[DEBUG] 步骤2: 检查验证配置")
+        print(f"[DEBUG]   - val_reward_fn is not None: {self.val_reward_fn is not None}")
+        print(f"[DEBUG]   - val_before_train: {self.config.trainer.get('val_before_train', True)}")
+        print("=" * 80)
+
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
+            print("[DEBUG] 步骤3: 开始验证 (_validate)...")
+            print(f"[DEBUG]   - 验证数据加载器存在: {hasattr(self, 'val_dataloader')}")
+            if hasattr(self, 'val_dataloader'):
+                print(f"[DEBUG]   - 验证数据加载器类型: {type(self.val_dataloader)}")
+            print("=" * 80)
+
             val_metrics = self._validate()
+
+            print("=" * 80)
+            print("[DEBUG] ✓ 验证完成")
             pprint(f'Initial validation metrics: {val_metrics}')
+            print("=" * 80)
             logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
                 return
