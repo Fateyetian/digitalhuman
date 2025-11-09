@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Logs
+*.log
+logs/
+
+# Output directories
+outputs/
+results/
+prompt_agent/
+
+# Debug files
+debug_*.py
+debug_*.sh
+start_debugging.sh
+find_stuck_location.py
+simple_vllm_server.py
+
+# Temp files
+*.swp
+*.swo
+*~

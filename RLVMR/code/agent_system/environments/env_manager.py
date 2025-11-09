@@ -45,7 +45,11 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         self.plannings = ["No plan."] * len(text_obs)
         self.tasks = []
         self.pre_text_obs = text_obs
-        self.meta_think = self.config is not None and self.config.env.alfworld.meta_think if hasattr(self.config.env, 'alfworld') and hasattr(self.config.env.alfworld, 'meta_think') else False
+        self.meta_think = (self.config is not None and
+                          hasattr(self.config, 'env') and
+                          hasattr(self.config.env, 'alfworld') and
+                          hasattr(self.config.env.alfworld, 'meta_think') and
+                          self.config.env.alfworld.meta_think)
         self.extract_task(text_obs)
 
         full_text_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands, init=True)
@@ -636,14 +640,19 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
 
 def make_envs(config):
     """
-    Create enviroments 
-    """ 
+    Create enviroments
+    """
+    print("[DEBUG make_envs] Starting make_envs()")
     # check if config.env.rollout.n is an integer
     if not isinstance(config.env.rollout.n, int):
         raise ValueError("config.env.rollout.n should be an integer")
     group_n = config.env.rollout.n if config.env.rollout.n > 0 else 1
+    print(f"[DEBUG make_envs] group_n={group_n}, env_name={config.env.env_name}")
+
     if "alfworld" in config.env.env_name.lower():
+        print("[DEBUG make_envs] Creating ALFWorld environments")
         from agent_system.environments.env_package.alfworld import build_alfworld_envs, alfworld_projection, alfworld_projection_rlvmr
+
         if config.env.env_name == 'alfworld/AlfredThorEnv':
             alf_config_path = os.path.join(os.path.dirname(__file__), 'env_package/alfworld/configs/config_tw.yaml')
         elif config.env.env_name == 'alfworld/AlfredTWEnv':
@@ -651,24 +660,48 @@ def make_envs(config):
         else:
             raise ValueError(f"Unsupported environment: {config.env.env_name}")
 
+        print(f"[DEBUG make_envs] alf_config_path={alf_config_path}")
+        print(f"[DEBUG make_envs] generalization_level={config.env.alfworld.generalization_level}")
+
         if config.env.alfworld.generalization_level == 2:
             alf_train_config_path = alf_config_path.replace('config_tw.yaml', 'config_tw_train_ood.yaml')
             alf_test_config_path = alf_config_path.replace('config_tw.yaml', 'config_tw_test_ood.yaml')
-            _envs = build_alfworld_envs(alf_train_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True)
-            _val_envs = build_alfworld_envs(alf_test_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, unseen=True)
+            print(f"[DEBUG make_envs] Building training envs (level 2)...")
+            train_env_num = config.data.train_batch_size if hasattr(config, 'trainer') and config.trainer.total_epochs > 0 else group_n
+            val_env_num = group_n
+            _envs = build_alfworld_envs(alf_train_config_path, config.env.seed, train_env_num, group_n, is_train=True)
+            print(f"[DEBUG make_envs] Building validation envs (level 2)...")
+            _val_envs = build_alfworld_envs(alf_test_config_path, config.env.seed + 1000, val_env_num, 1, is_train=False, unseen=True)
         elif config.env.alfworld.generalization_level == 1:
-            _envs = build_alfworld_envs(alf_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True)
-            _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, unseen=True)
+            print(f"[DEBUG make_envs] Building training envs (level 1)...")
+            train_env_num = config.data.train_batch_size if hasattr(config, 'trainer') and config.trainer.total_epochs > 0 else group_n
+            val_env_num = group_n
+            _envs = build_alfworld_envs(alf_config_path, config.env.seed, train_env_num, group_n, is_train=True)
+            print(f"[DEBUG make_envs] Building validation envs (level 1)...")
+            _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, val_env_num, 1, is_train=False, unseen=True)
         elif config.env.alfworld.generalization_level == 0:
-            _envs = build_alfworld_envs(alf_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True)
-            _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False)
+            print(f"[DEBUG make_envs] Building training envs (level 0)...")
+            # Use env.rollout.n for validation-only mode when total_epochs=0
+            train_env_num = config.data.train_batch_size if hasattr(config, 'trainer') and config.trainer.total_epochs > 0 else group_n
+            val_env_num = group_n  # Use env.rollout.n for validation
+            print(f"[DEBUG make_envs] train_env_num={train_env_num}, val_env_num={val_env_num}")
+            _envs = build_alfworld_envs(alf_config_path, config.env.seed, train_env_num, group_n, is_train=True)
+            print(f"[DEBUG make_envs] Training envs built successfully")
+            print(f"[DEBUG make_envs] Building validation envs (level 0)...")
+            _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, val_env_num, 1, is_train=False)
+            print(f"[DEBUG make_envs] Validation envs built successfully")
 
+        print(f"[DEBUG make_envs] Setting up projection function...")
         if config.env.alfworld.meta_think:
             projection_f = partial(alfworld_projection_rlvmr)
         else:
             projection_f = partial(alfworld_projection)
+
+        print(f"[DEBUG make_envs] Creating AlfWorldEnvironmentManager for training...")
         envs = AlfWorldEnvironmentManager(_envs, projection_f, config.env.env_name, config)
+        print(f"[DEBUG make_envs] Creating AlfWorldEnvironmentManager for validation...")
         val_envs = AlfWorldEnvironmentManager(_val_envs, projection_f, config.env.env_name, config)
+        print(f"[DEBUG make_envs] Environment managers created successfully")
         return envs, val_envs
     elif "sciworld" in config.env.env_name.lower():
         from agent_system.environments.env_package.sciworld import build_sciworld_envs, sciworld_projection
