@@ -64,7 +64,11 @@ extras_require = {
 
 from pathlib import Path
 this_directory = Path(__file__).parent
-long_description = (this_directory / "README.md").read_text()
+readme_path = this_directory / "README.md"
+if readme_path.exists():
+    long_description = readme_path.read_text()
+else:
+    long_description = "verl: Volcano Engine Reinforcement Learning for LLM"
 
 setup(
     name='verl',

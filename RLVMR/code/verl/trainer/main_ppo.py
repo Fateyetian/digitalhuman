@@ -60,13 +60,23 @@ def run_ppo(config) -> None:
     os.environ["ENSURE_CUDA_VISIBLE_DEVICES"] = os.environ.get('CUDA_VISIBLE_DEVICES', '')
     if not ray.is_initialized():
         # this is for local ray cluster
-        ray.init(runtime_env={
-            'env_vars': {
-                'TOKENIZERS_PARALLELISM': 'true',
-                'NCCL_DEBUG': 'WARN',
-                'VLLM_LOGGING_LEVEL': 'WARN'
-            }
-        })
+        ray.init(
+            runtime_env={
+                'env_vars': {
+                    'TOKENIZERS_PARALLELISM': 'true',
+                    'NCCL_DEBUG': 'WARN',
+                    'VLLM_LOGGING_LEVEL': 'WARN'
+                }
+            },
+            # Disable dashboard to avoid initialization errors
+            include_dashboard=False,
+            # Increase timeout for node registration
+            _system_config={
+                'raylet_start_wait_time_s': 300,
+            },
+            # Ignore reinit error if already initialized
+            ignore_reinit_error=True,
+        )
 
     runner = TaskRunner.remote()
     ray.get(runner.run.remote(config))

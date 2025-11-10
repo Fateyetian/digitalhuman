@@ -93,4 +93,5 @@ def copy_local_path_from_hdfs(src: str, cache_dir=None, filelock='.file.lock', v
                 copy(src, local_path)
         return local_path
     else:
-        return src
+        # Convert to absolute path for compatibility with Hugging Face
+        return os.path.abspath(src)

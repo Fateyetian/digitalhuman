@@ -125,7 +125,7 @@ def llm(prompt, model, temperature=0.0, max_tokens=1024, retries=3):
             time.sleep(2 ** attempt)
     return None
 
-def llm_json(prompt, model, temperature=0.0, max_tokens=1024, retries=5):
+def llm_json(prompt, model, temperature=0.0, max_tokens=2048, retries=5):
     """Call OpenAI API and parse JSON response"""
     for attempt in range(retries):
         try:
@@ -151,14 +151,35 @@ def llm_json(prompt, model, temperature=0.0, max_tokens=1024, retries=5):
             if json_start == -1:
                 raise json.JSONDecodeError("No JSON found in response", content, 0)
 
-            # Extract JSON part
+            # Extract JSON part - find matching closing bracket
             json_content = content[json_start:]
+
+            # Try to find the end of JSON by counting brackets
+            bracket_count = 0
+            json_end = -1
+            start_char = json_content[0]
+            end_char = ']' if start_char == '[' else '}'
+
+            for i, char in enumerate(json_content):
+                if char == start_char:
+                    bracket_count += 1
+                elif char == end_char:
+                    bracket_count -= 1
+                    if bracket_count == 0:
+                        json_end = i + 1
+                        break
+
+            if json_end != -1:
+                json_content = json_content[:json_end]
+
             parsed = json.loads(json_content)
             return parsed
 
         except json.JSONDecodeError as e:
             print(f"JSON Parse Error: {e}. Retrying... (Attempt {attempt + 1}/{retries})")
-            print(f"Raw content (first 300 chars): {content[:300] if 'content' in locals() else 'N/A'}")
+            if 'content' in locals():
+                print(f"Raw content (first 300 chars): {content[:300]}")
+                print(f"Extracted JSON (first 300 chars): {json_content[:300] if 'json_content' in locals() else 'N/A'}")
             time.sleep(2 ** attempt)
         except Exception as e:
             print(f"Error: {e}. Retrying... (Attempt {attempt + 1}/{retries})")
@@ -333,10 +354,9 @@ Now annotate the trajectory:"""
             "data": step_level_data
         })
 
-        # Mark as completed and save progress
+        # Mark as completed and save progress automatically
         completed_indices.add(idx)
-        if args.resume:
-            save_progress(idx, sft_data, completed_indices)
+        save_progress(idx, sft_data, completed_indices)
 
 with open(SAVE_PATH, "w", encoding="utf-8") as f:
     json.dump(sft_data, f, ensure_ascii=False, indent=4)
