@@ -143,23 +143,45 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         """
         postprocess_text_obs = []
         use_bdrs_template = (
-            hasattr(self, 'config') and self.config is not None and
-            hasattr(self.config, 'algorithm') and hasattr(self.config.algorithm, 'bdrs') and
+            self.config is not None and
+            hasattr(self.config, 'algorithm') and
+            hasattr(self.config.algorithm, 'bdrs') and
             getattr(self.config.algorithm.bdrs, 'enable', False)
         )
+
+        # DEBUG: 诊断template选择
+        print(f"\n{'='*80}")
+        print(f"[DEBUG build_text_obs] Template选择诊断:")
+        print(f"  self.config is not None: {self.config is not None}")
+        if self.config is not None:
+            print(f"  hasattr(config, 'algorithm'): {hasattr(self.config, 'algorithm')}")
+            if hasattr(self.config, 'algorithm'):
+                print(f"  hasattr(algorithm, 'bdrs'): {hasattr(self.config.algorithm, 'bdrs')}")
+                if hasattr(self.config.algorithm, 'bdrs'):
+                    print(f"  config.algorithm.bdrs.enable: {getattr(self.config.algorithm.bdrs, 'enable', False)}")
+        print(f"  => use_bdrs_template = {use_bdrs_template}")
+        print(f"  self.meta_think = {self.meta_think}")
+        if self.config and hasattr(self.config.env, 'alfworld') and hasattr(self.config.env.alfworld, 'action_only'):
+            print(f"  self.config.env.alfworld.action_only = {self.config.env.alfworld.action_only}")
+
         if self.meta_think and not use_bdrs_template:
             _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_MC
             _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_MC
+            print(f"  => 选择分支: meta_think (MC)")
         elif self.config is not None and self.config.env.alfworld.action_only and not use_bdrs_template:
             _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_NOTHINK
             _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_NOTHINK
+            print(f"  => 选择分支: action_only (NOTHINK)")
         else:
             if use_bdrs_template:
                 _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_BDRS
                 _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_BDRS
+                print(f"  => 选择分支: BDRS ✓✓✓")
             else:
                 _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS
                 _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE
+                print(f"  => 选择分支: 默认 (THINK)")
+        print(f"{'='*80}\n")
 
         for i in range(len(text_obs)):
             # exclude 'help' in admissible_actions[i]
@@ -651,7 +673,7 @@ def make_envs(config):
 
     if "alfworld" in config.env.env_name.lower():
         print("[DEBUG make_envs] Creating ALFWorld environments")
-        from agent_system.environments.env_package.alfworld import build_alfworld_envs, alfworld_projection, alfworld_projection_rlvmr
+        from agent_system.environments.env_package.alfworld import build_alfworld_envs, alfworld_projection, alfworld_projection_rlvmr, alfworld_projection_bdrs
 
         if config.env.env_name == 'alfworld/AlfredThorEnv':
             alf_config_path = os.path.join(os.path.dirname(__file__), 'env_package/alfworld/configs/config_tw.yaml')
@@ -692,9 +714,19 @@ def make_envs(config):
             print(f"[DEBUG make_envs] Validation envs built successfully")
 
         print(f"[DEBUG make_envs] Setting up projection function...")
-        if config.env.alfworld.meta_think:
+        # Check if BDRS is enabled
+        use_bdrs = (hasattr(config, 'algorithm') and
+                   hasattr(config.algorithm, 'bdrs') and
+                   getattr(config.algorithm.bdrs, 'enable', False))
+
+        if use_bdrs:
+            print("[DEBUG make_envs] Using BDRS projection (PLAN/EXECUTE/EXPLORE/VERIFY)")
+            projection_f = partial(alfworld_projection_bdrs)
+        elif config.env.alfworld.meta_think:
+            print("[DEBUG make_envs] Using RLVMR projection (planning/explore/reflection/monitor)")
             projection_f = partial(alfworld_projection_rlvmr)
         else:
+            print("[DEBUG make_envs] Using default projection (think/action)")
             projection_f = partial(alfworld_projection)
 
         print(f"[DEBUG make_envs] Creating AlfWorldEnvironmentManager for training...")

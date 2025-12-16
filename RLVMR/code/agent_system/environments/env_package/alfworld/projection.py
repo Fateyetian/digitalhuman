@@ -111,3 +111,70 @@ def alfworld_projection_rlvmr(actions: List[str], action_pools: List[List[str]])
         valids.append(valid)
 
     return actions_out, valids, plannings, action_available
+
+def alfworld_projection_bdrs(actions: List[str], action_pools: List[List[str]]):
+    """
+    Projection function for BDRS format with <PLAN>/<EXECUTE>/<EXPLORE>/<VERIFY> tags
+    """
+    bdrs_tags = [
+        r"<PLAN>.*?</PLAN>",
+        r"<EXECUTE>.*?</EXECUTE>",
+        r"<EXPLORE>.*?</EXPLORE>",
+        r"<VERIFY>.*?</VERIFY>"
+    ]
+
+    actions_out = []
+    valids = []
+    plannings = []
+    action_available = [False] * len(actions)
+
+    for i, output in enumerate(actions):
+        valid = 1
+        act_str = ""
+        planning_content = None
+
+        # Check for Chinese
+        if re.search(r'[\u4e00-\u9fff]', output):
+            valid = 0
+
+        # Check for exactly ONE <action>...</action>
+        matches = re.findall(r"<action>([\s\S]*?)</action>", output, re.IGNORECASE)
+        if len(matches) != 1:
+            valid = 0
+        else:
+            act_candidate = matches[0].strip()
+            # Clean up common formatting errors
+            act_candidate = act_candidate.rstrip(']').rstrip("']").rstrip('"]')
+            act_str = act_candidate
+
+            # Check if action is in the admissible actions pool
+            if act_candidate in action_pools[i]:
+                action_available[i] = True
+
+        # Check for exactly ONE BDRS tag (case-insensitive)
+        found_bdrs = False
+        bdrs_count = 0
+        for tag in bdrs_tags:
+            tag_matches = list(re.finditer(tag, output, re.IGNORECASE | re.DOTALL))
+            bdrs_count += len(tag_matches)
+            for tag_match in tag_matches:
+                if tag_match:
+                    # Remove the xml tags and check if not empty
+                    inner = re.sub(r"<.*?>", "", tag_match.group(0)).strip()
+                    if inner:
+                        found_bdrs = True
+                        # BDRS tag must appear before <action>
+                        action_pos = output.lower().find("<action>")
+                        if output.find(tag_match.group(0)) > action_pos:
+                            valid = 0
+
+        if bdrs_count != 1:
+            valid = 0
+        if not found_bdrs:
+            valid = 0
+
+        actions_out.append(act_str)
+        valids.append(valid)
+        plannings.append(planning_content)
+
+    return actions_out, valids, plannings, action_available

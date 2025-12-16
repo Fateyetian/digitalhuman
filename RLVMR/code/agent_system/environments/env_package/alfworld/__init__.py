@@ -1,2 +1,2 @@
-from .projection import alfworld_projection, alfworld_projection_rlvmr
+from .projection import alfworld_projection, alfworld_projection_rlvmr, alfworld_projection_bdrs
 from .envs import build_alfworld_envs

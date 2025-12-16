@@ -22,24 +22,40 @@ from together import Together
 from agent_system.environments.env_package.alfworld.envs import load_config_file
 from agent_system.environments.env_package.alfworld.alfworld.agents.environment import get_environment
 
-def build_env(env_name, env_num=1, seed=1, history_length=2, alf_env_type="alfworld/AlfredTWEnv", game_files=None):
+def build_env(env_name, env_num=1, seed=1, history_length=2, alf_env_type="alfworld/AlfredTWEnv", game_files=None, use_bdrs=True):
     group_n = 1
     if env_name == "alfworld":
         # Test AlfWorldEnvironmentManager
-        from agent_system.environments.env_package.alfworld import alfworld_projection
+        from agent_system.environments.env_package.alfworld import alfworld_projection, alfworld_projection_bdrs
         from agent_system.environments.env_package.alfworld import build_alfworld_envs
         alf_config_path = os.path.join(os.path.dirname(__file__), '../../../agent_system/environments/env_package/alfworld/configs/config_tw.yaml')
         # Now with game_files support!
         envs = build_alfworld_envs(alf_config_path, seed=seed, env_num=env_num, group_n=group_n, is_train=True)
+
+        # DEBUG: 打印use_bdrs值
+        print(f"\n{'='*80}")
+        print(f"[DEBUG build_env] use_bdrs参数 = {use_bdrs}")
+        print(f"{'='*80}\n")
+
+        # Select projection function based on use_bdrs flag
+        projection_func = alfworld_projection_bdrs if use_bdrs else alfworld_projection
+        print(f"[DEBUG build_env] 选择的projection函数 = {projection_func.__name__}")
+
         # Minimal config object with required fields
         cfg = SimpleNamespace(
             env=SimpleNamespace(
                 env_name=alf_env_type,
                 history_length=history_length,
-                alfworld=SimpleNamespace(meta_think=False)
+                alfworld=SimpleNamespace(meta_think=False, action_only=False)  # 明确设置action_only=False
+            ),
+            algorithm=SimpleNamespace(
+                bdrs=SimpleNamespace(enable=use_bdrs)
             )
         )
-        env_manager = AlfWorldEnvironmentManager(envs, alfworld_projection, cfg)
+        print(f"[DEBUG build_env] cfg.algorithm.bdrs.enable = {cfg.algorithm.bdrs.enable}")
+
+        env_manager = AlfWorldEnvironmentManager(envs, projection_func, env_name, cfg)  # 正确传递env_name!
+        print(f"[DEBUG build_env] AlfWorldEnvironmentManager已创建\n")
     else:
         raise ValueError(f"Unsupported environment name: {env_name}")
 
@@ -125,7 +141,11 @@ if __name__ == "__main__":
     parser.add_argument("--alf_env_type", default="alfworld/AlfredTWEnv", help="alfworld/AlfredTWEnv or alfworld/AlfredThorEnv")
     parser.add_argument("--unique_envs", action="store_true", help="确保每个环境使用唯一的游戏文件（无重复采样）")
     parser.add_argument("--dry_run", action="store_true", help="仅打印唯一任务的批次分配，不创建环境、不调用模型")
+    parser.add_argument("--no_bdrs", action="store_true", default=False, help="禁用BDRS格式，使用<think>格式")
     args = parser.parse_args()
+
+    # 修复use_bdrs逻辑：默认True，除非明确指定--no_bdrs
+    args.use_bdrs = not args.no_bdrs
 
     # -------- logging ----------
     os.makedirs("logs/alfworld", exist_ok=True)
@@ -137,6 +157,11 @@ if __name__ == "__main__":
         format="%(asctime)s - %(message)s",
         handlers=[logging.FileHandler(log_fp, encoding="utf-8"), logging.StreamHandler()],
     )
+
+    # 关键：打印BDRS配置以便调试
+    logging.info(f"=" * 60)
+    logging.info(f"BDRS Configuration: use_bdrs={args.use_bdrs}")
+    logging.info(f"=" * 60)
 
     # -------- Parameters ----------
     max_steps = args.max_steps
@@ -187,6 +212,12 @@ if __name__ == "__main__":
     all_overall_success_rates = []
     all_task_success_history = defaultdict(list)
     global_env_counter = 0
+
+    # NEW: Global metric accumulators
+    all_episode_lengths = []
+    all_episode_rewards = []
+    all_valid_actions = []
+    all_total_actions = []
 
     # Helper: collect all train game files
     def collect_all_game_files(alf_config_path, is_train=True, eval_dataset='eval_in_distribution'):
@@ -250,11 +281,19 @@ if __name__ == "__main__":
             history_length=args.history_length,
             alf_env_type=args.alf_env_type,
             game_files=batch_game_files,
+            use_bdrs=args.use_bdrs,  # Pass BDRS flag
         )
         
         # Batch-level statistics
         batch_overall_success_rates = []
         batch_task_success_history = defaultdict(list)
+
+        # NEW: Track additional metrics
+        batch_episode_lengths = []  # 记录每个episode的步数
+        batch_episode_rewards = []  # 记录每个episode的总奖励
+        batch_valid_actions = []    # 记录有效动作数
+        batch_total_actions = []    # 记录总动作数
+
         try:
             # ======================= Test Loop for this Batch =======================
             for test_idx in range(test_times):
@@ -276,6 +315,12 @@ if __name__ == "__main__":
                 task_success_cnt = defaultdict(int)
                 task_total_cnt = defaultdict(int)
 
+                # NEW: Per-episode metrics tracking
+                episode_lengths_this_round = np.zeros(current_batch_size, dtype=int)  # 每个env的步数
+                episode_rewards_this_round = np.zeros(current_batch_size, dtype=float)  # 每个env的累积奖励
+                valid_actions_this_round = np.zeros(current_batch_size, dtype=int)  # 每个env的有效动作数
+                total_actions_this_round = np.zeros(current_batch_size, dtype=int)  # 每个env的总动作数
+
                 for step_idx in range(max_steps):
                     logging.info(f"Batch {batch_idx + 1} Step {step_idx}; Dones ({np.array(env_dones).sum().item()}/{current_batch_size}); SR {overall_success_this_round.mean().item()}")
 
@@ -296,9 +341,29 @@ if __name__ == "__main__":
                     prev_prompts = obs["text"]  # keep for logging & chat history
                     # Preserve the model's raw outputs for logging/chat before any projection mutates them
                     raw_actions = actions.copy()
+
+                    # NEW: Track action validity before stepping
+                    for i in range(current_batch_size):
+                        if not env_dones[i]:
+                            total_actions_this_round[i] += 1
+
                     # Pass a copy into the env manager so in-place projection does not alter our raw copy
                     obs, rewards, dones, infos = env_manager.step(actions.copy())
                     last_infos = infos
+                    env_dones = [a or b for a, b in zip(env_dones, dones)]
+
+                    # NEW: Track rewards, steps, and valid actions
+                    for i in range(current_batch_size):
+                        if not env_dones[i] or dones[i]:  # 如果这一步刚完成或还在进行
+                            episode_rewards_this_round[i] += rewards[i]
+                            episode_lengths_this_round[i] += 1
+
+                            # Check if action was valid (no error message in observation)
+                            is_valid = "Nothing happens" not in obs["text"][i] and \
+                                      "not valid" not in obs["text"][i].lower() and \
+                                      "cannot" not in obs["text"][i].lower()
+                            if is_valid:
+                                valid_actions_this_round[i] += 1
 
                     # --- Determine endings and successes ---
                     for i in range(current_batch_size):
@@ -428,6 +493,12 @@ if __name__ == "__main__":
                 round_success_rate = overall_success_this_round.mean()
                 batch_overall_success_rates.append(round_success_rate)
 
+                # NEW: Accumulate metrics for this round
+                batch_episode_lengths.extend(episode_lengths_this_round.tolist())
+                batch_episode_rewards.extend(episode_rewards_this_round.tolist())
+                batch_valid_actions.extend(valid_actions_this_round.tolist())
+                batch_total_actions.extend(total_actions_this_round.tolist())
+
                 logging.info(f"Batch {batch_idx + 1} Test {test_idx} overall success: {round_success_rate:.4f}")
 
                 for task in TASKS + ["other"]:
@@ -449,6 +520,12 @@ if __name__ == "__main__":
             for task, rates in batch_task_success_history.items():
                 all_task_success_history[task].extend(rates)
 
+            # NEW: Accumulate batch metrics to global metrics
+            all_episode_lengths.extend(batch_episode_lengths)
+            all_episode_rewards.extend(batch_episode_rewards)
+            all_valid_actions.extend(batch_valid_actions)
+            all_total_actions.extend(batch_total_actions)
+
             # Update global env counter
             global_env_counter += current_batch_size
 
@@ -466,10 +543,30 @@ if __name__ == "__main__":
     logging.info(
         f"Total batches: {num_batches} | Batch size: {batch_size} | Total envs processed: {global_env_counter}"
     )
-    logging.info(
-        f"Overall success avg ± std: "
-        f"{np.mean(all_overall_success_rates):.4f} ± {np.std(all_overall_success_rates):.4f}"
-    )
+
+    # Calculate success rate
+    success_rate = np.mean(all_overall_success_rates)
+    success_count = int(success_rate * global_env_counter)
+    logging.info(f"\n🎯 Success Rate: {success_rate:.2%} ({success_count}/{global_env_counter} tasks)")
+
+    # Calculate average episode length (only for completed episodes)
+    if len(all_episode_lengths) > 0:
+        avg_length = np.mean(all_episode_lengths)
+        logging.info(f"📏 Average Episode Length: {avg_length:.1f} steps")
+
+    # Calculate average episode reward
+    if len(all_episode_rewards) > 0:
+        avg_reward = np.mean(all_episode_rewards)
+        logging.info(f"🏆 Average Episode Reward: {avg_reward:.2f}")
+
+    # Calculate valid action ratio
+    if sum(all_total_actions) > 0:
+        valid_ratio = sum(all_valid_actions) / sum(all_total_actions)
+        logging.info(f"✅ Valid Action Ratio: {valid_ratio:.2%}")
+
+    logging.info("\n" + "="*50)
+    logging.info("Task-Specific Success Rates:")
+    logging.info("="*50)
 
     for task in TASKS + ["other"]:
         if all_task_success_history.get(task):

@@ -35,6 +35,7 @@ EXPERIMENT_NAME=${4:-eval_cold_start_qwen1.5b_step75}
 python3 -m verl.trainer.main_ppo \
       algorithm.adv_estimator=gae \
       algorithm.use_kl_in_reward=False \
+      +algorithm.bdrs.enable=True \
       actor_rollout_ref.model.path=$MODEL_PATH \
       actor_rollout_ref.model.use_remove_padding=True \
       actor_rollout_ref.rollout.n=1 \
@@ -53,7 +54,7 @@ python3 -m verl.trainer.main_ppo \
       env.max_steps=30 \
       env.rollout.n=$NUM_TASKS \
       env.alfworld.generalization_level=0 \
-      env.alfworld.meta_think=True \
+      env.alfworld.meta_think=False \
       +env.alfworld.action_only=False \
       trainer.critic_warmup=0 \
       trainer.logger=[console,wandb] \
