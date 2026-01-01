@@ -1,180 +1,258 @@
+"""
+ALFWorld Projection Functions
+
+This module contains projection functions that validate and process model outputs.
+Supports two modes:
+1. Basic mode: <think>...</think> + <action>...</action>
+2. ReBel mode: <belief>...</belief> + <action>...</action>
+
+Enhanced with intelligent action matching to handle:
+- Ambiguous prepositions (in/on, on/in)
+- Minor formatting differences
+- Fuzzy matching to admissible actions
+"""
+
 import re
-from typing import List
+from typing import List, Tuple, Optional
 
-def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
-    """
-    An function to process the actions
-    actions: the list of actions to be processeed, it is a list of strings.
-    action_pools: the list of action pools, each pool is a list of strings.
-    """
 
-    valids = [0] * len(actions)
+def match_action_to_admissible(action: str, admissible_actions: List[str]) -> Tuple[str, bool]:
+    """
+    Intelligent action matching to handle ambiguous prepositions and minor variations
+
+    Handles common issues:
+    - "put X in/on Y" or "put X on/in Y" (ambiguous prepositions from SFT data)
+    - Extra whitespace
+    - Case sensitivity
+
+    Args:
+        action: The extracted action from model output
+        admissible_actions: List of valid actions from the environment
+
+    Returns:
+        (matched_action, was_corrected): The best matching action and whether it was corrected
+    """
+    if not admissible_actions:
+        return action, False
+
+    # Strategy 1: Direct match (fastest path)
+    if action in admissible_actions:
+        return action, False
+
+    # Strategy 2: Handle in/on ambiguity (most common issue)
+    if 'in/on' in action or 'on/in' in action:
+        # Try replacing with 'in'
+        action_with_in = action.replace('in/on', 'in').replace('on/in', 'in')
+        if action_with_in in admissible_actions:
+            return action_with_in, True
+
+        # Try replacing with 'on'
+        action_with_on = action.replace('in/on', 'on').replace('on/in', 'on')
+        if action_with_on in admissible_actions:
+            return action_with_on, True
+
+    # Strategy 3: Normalize whitespace and try again
+    normalized_action = ' '.join(action.split())
+    if normalized_action in admissible_actions:
+        return normalized_action, True
+
+    # Strategy 4: Fuzzy match - find closest admissible action
+    # Look for actions with similar prefix (same action type)
+    action_prefix = action.split()[0] if action.split() else ""
+    if action_prefix:
+        candidates = [a for a in admissible_actions if a.startswith(action_prefix)]
+
+        # If only one candidate with same prefix, use it (e.g., only one "put" action available)
+        if len(candidates) == 1:
+            return candidates[0], True
+
+        # Try to find exact substring match
+        for candidate in candidates:
+            if action in candidate or candidate in action:
+                return candidate, True
+
+    # Strategy 5: No match found, return original action
+    # The environment will reject it, but at least we tried
+    return action, False
+
+
+def alfworld_projection(actions: List[str], action_pools: List[List[str]]) -> Tuple[List[str], List[int], List[None], List[bool]]:
+    """
+    Basic projection function for standard <think>/<action> format
+
+    Args:
+        actions: List of model outputs
+        action_pools: List of admissible actions for each environment
+
+    Returns:
+        actions_out: Extracted actions
+        valids: Binary validity flags (1=valid, 0=invalid)
+        plannings: Placeholder (always None for basic mode)
+        action_available: Whether extracted action is in admissible set
+    """
+    actions_out = []
+    valids = []
+    action_available = [False] * len(actions)
 
     for i in range(len(actions)):
-        original_str = actions[i]  # keep the original string
-        actions[i] = actions[i].lower()
-
-        # Attempt to extract the substring within <action>...</action>
-        start_tag = "<action>"
-        end_tag = "</action>"
-        start_idx = actions[i].find(start_tag)
-        end_idx = actions[i].find(end_tag)
-        try:
-            if start_idx == -1 or end_idx == -1:
-                # If we can't find a valid <action>...</action> block, mark as invalid
-                actions[i] = actions[i][-30:]  # 0 is invalid action for Sokoban
-                continue
-
-            # Extract just the content between the tags
-            extracted_action = actions[i][start_idx + len(start_tag):end_idx].strip().lower()
-            
-            actions[i] = extracted_action
-            valids[i] = 1
-
-        except:
-            actions[i] = actions[i][-30:]
-
-        # check <think>...</think>
-        think_start_idx = original_str.find("<think>")
-        think_end_idx = original_str.find("</think>")
-        if think_start_idx == -1 or think_end_idx == -1:
-            valids[i] = 0
-
-        # check if contains any Chinese characters
-        if re.search(r'[\u4e00-\u9fff]', original_str):
-            valids[i] = 0
-
-    return actions, valids, [], valids
-
-def alfworld_projection_rlvmr(actions: List[str], action_pools: List[List[str]]):
-    skill_tags = [
-        r"<planning>.*?</planning>",
-        r"<reflection>.*?</reflection>",
-        r"<explore>.*?</explore>",
-        r"<monitor>.*?</monitor>"
-    ]
-
-    actions_out = []
-    valids = []
-    plannings = []
-    action_available = [False] * len(actions)
-    for i, output in enumerate(actions):
+        original_str = actions[i]
+        actions_lower = actions[i].lower()
         valid = 1
         act_str = ""
 
-        planning_content = None
-        planning_match = re.search(r"<planning>([\s\S]*?)</planning>", output, re.IGNORECASE)
-        if planning_match:
-            planning_inner = planning_match.group(1).strip()
-            planning_content = planning_inner if planning_inner else None
-        plannings.append(planning_content)
-
-        # Check for Chinese
-        if re.search(r'[\u4e00-\u9fff]', output):
+        # Check for Chinese characters
+        if re.search(r'[\u4e00-\u9fff]', original_str):
             valid = 0
 
-        # Check ONLY ONE <action>...</action>
-        matches = re.findall(r"<action>([\s\S]*?)</action>", output, re.IGNORECASE)
-        if len(matches) != 1:
+        # Check for exactly ONE <think>...</think>
+        think_matches = re.findall(r"<think>([\s\S]*?)</think>", original_str, re.IGNORECASE)
+        if len(think_matches) != 1:
             valid = 0
         else:
-            act_candidate = matches[0].strip()
-            act_str = act_candidate
-            if act_candidate in action_pools[i]:
-                action_available[i] = True
-
-        # Check ONLY ONE skill tag, appears before <action> and is non-empty
-        found_skill = False
-        min_action_pos = output.lower().find("<action>")
-        skill_positions = []
-        skill_count = 0
-        for tag in skill_tags:
-            tag_matchs = list(re.finditer(tag, output, re.IGNORECASE | re.DOTALL))
-            skill_count += len(tag_matchs)
-            for tag_match in tag_matchs:
-                if tag_match:
-                    # Remove the xml tags and check if not empty
-                    inner = re.sub(r"<.*?>", "", tag_match.group(0)).strip()
-                    if inner:
-                        found_skill = True
-                        skill_positions.append(output.find(tag_match.group(0)))
-                        # skill tag must appear before <action>
-                        if output.find(tag_match.group(0)) > min_action_pos:
-                            valid = 0
-
-        if skill_count != 1:  
-            valid = 0
-        if not found_skill:
-            valid = 0
-
-        actions_out.append(act_str)
-        valids.append(valid)
-
-    return actions_out, valids, plannings, action_available
-
-def alfworld_projection_bdrs(actions: List[str], action_pools: List[List[str]]):
-    """
-    Projection function for BDRS format with <PLAN>/<EXECUTE>/<EXPLORE>/<VERIFY> tags
-    """
-    bdrs_tags = [
-        r"<PLAN>.*?</PLAN>",
-        r"<EXECUTE>.*?</EXECUTE>",
-        r"<EXPLORE>.*?</EXPLORE>",
-        r"<VERIFY>.*?</VERIFY>"
-    ]
-
-    actions_out = []
-    valids = []
-    plannings = []
-    action_available = [False] * len(actions)
-
-    for i, output in enumerate(actions):
-        valid = 1
-        act_str = ""
-        planning_content = None
-
-        # Check for Chinese
-        if re.search(r'[\u4e00-\u9fff]', output):
-            valid = 0
+            think_content = think_matches[0].strip()
+            if not think_content:  # Empty think tag
+                valid = 0
 
         # Check for exactly ONE <action>...</action>
-        matches = re.findall(r"<action>([\s\S]*?)</action>", output, re.IGNORECASE)
-        if len(matches) != 1:
+        action_matches = re.findall(r"<action>([\s\S]*?)</action>", actions_lower, re.IGNORECASE)
+        if len(action_matches) != 1:
             valid = 0
         else:
-            act_candidate = matches[0].strip()
-            # Clean up common formatting errors
-            act_candidate = act_candidate.rstrip(']').rstrip("']").rstrip('"]')
-            act_str = act_candidate
+            act_str = action_matches[0].strip()
 
-            # Check if action is in the admissible actions pool
-            if act_candidate in action_pools[i]:
+            # Intelligent action matching
+            matched_action, was_corrected = match_action_to_admissible(act_str, action_pools[i])
+            act_str = matched_action
+
+            # Check if (possibly corrected) action is in admissible actions
+            if act_str in action_pools[i]:
                 action_available[i] = True
 
-        # Check for exactly ONE BDRS tag (case-insensitive)
-        found_bdrs = False
-        bdrs_count = 0
-        for tag in bdrs_tags:
-            tag_matches = list(re.finditer(tag, output, re.IGNORECASE | re.DOTALL))
-            bdrs_count += len(tag_matches)
-            for tag_match in tag_matches:
-                if tag_match:
-                    # Remove the xml tags and check if not empty
-                    inner = re.sub(r"<.*?>", "", tag_match.group(0)).strip()
-                    if inner:
-                        found_bdrs = True
-                        # BDRS tag must appear before <action>
-                        action_pos = output.lower().find("<action>")
-                        if output.find(tag_match.group(0)) > action_pos:
-                            valid = 0
-
-        if bdrs_count != 1:
-            valid = 0
-        if not found_bdrs:
-            valid = 0
+        # If invalid, use fallback
+        if not act_str:
+            act_str = actions_lower[-30:]  # Fallback to last 30 chars
 
         actions_out.append(act_str)
         valids.append(valid)
-        plannings.append(planning_content)
 
-    return actions_out, valids, plannings, action_available
+    return actions_out, valids, [None] * len(actions), action_available
+
+
+def alfworld_projection_rebel(actions: List[str], action_pools: List[List[str]]) -> Tuple[List[str], List[int], List[str], List[bool]]:
+    """
+    ReBel projection function for <belief>/<reasoning>/<action> format
+
+    Validates:
+    1. Exactly one <belief>...</belief> block containing valid JSON with required keys
+    2. Optional <reasoning>...</reasoning> block
+    3. Exactly one <action>...</action> block
+    4. <belief> appears before <action>
+    5. No Chinese characters
+
+    Expected belief format:
+    {
+      "world_model_update": {...},
+      "task_progress_update": {...},
+      "exploration_map_update": {...}
+    }
+
+    Args:
+        actions: List of model outputs
+        action_pools: List of admissible actions for each environment
+
+    Returns:
+        actions_out: Extracted actions
+        valids: Binary validity flags (1=valid, 0=invalid)
+        beliefs: Extracted belief text (for reward calculation)
+        action_available: Whether extracted action is in admissible set
+    """
+    import json
+
+    actions_out = []
+    valids = []
+    beliefs = []
+    action_available = [False] * len(actions)
+
+    for i, output in enumerate(actions):
+        valid = 1
+        act_str = ""
+        belief_text = ""
+
+        # Check for Chinese characters
+        if re.search(r'[\u4e00-\u9fff]', output):
+            valid = 0
+
+        # Check for exactly ONE <belief>...</belief>
+        belief_matches = re.findall(r"<belief>(.*?)</belief>", output, re.DOTALL | re.IGNORECASE)
+        if len(belief_matches) != 1:
+            valid = 0
+        else:
+            belief_text = belief_matches[0].strip()
+
+            # Validate belief structure: try to parse as JSON
+            try:
+                belief_json = belief_text.replace("'", '"')
+                belief_data = json.loads(belief_json)
+
+                # Check for required keys in new format
+                has_world_model = 'world_model_update' in belief_data
+                has_task_progress = 'task_progress_update' in belief_data
+                has_exploration = 'exploration_map_update' in belief_data
+
+                # Also support old format: M_t, P_t, E_t
+                has_old_format = (
+                    re.search(r'M_t:', belief_text, re.IGNORECASE) and
+                    re.search(r'P_t:', belief_text, re.IGNORECASE) and
+                    re.search(r'E_t:', belief_text, re.IGNORECASE)
+                )
+
+                # Valid if either new format or old format is present
+                if not (has_world_model or has_task_progress or has_exploration or has_old_format):
+                    valid = 0
+
+            except json.JSONDecodeError:
+                # Try old format parsing
+                if not (re.search(r'M_t:', belief_text, re.IGNORECASE) and
+                        re.search(r'P_t:', belief_text, re.IGNORECASE) and
+                        re.search(r'E_t:', belief_text, re.IGNORECASE)):
+                    valid = 0
+
+            # Check if belief is empty
+            if not belief_text or len(belief_text) < 10:
+                valid = 0
+
+        # Check for exactly ONE <action>...</action>
+        action_matches = re.findall(r"<action>([\s\S]*?)</action>", output, re.IGNORECASE)
+        if len(action_matches) != 1:
+            valid = 0
+        else:
+            act_str = action_matches[0].strip().lower()
+
+            # Intelligent action matching (handles in/on ambiguity and other issues)
+            matched_action, was_corrected = match_action_to_admissible(act_str, action_pools[i])
+            act_str = matched_action
+
+            # Check if (possibly corrected) action is in admissible actions
+            if act_str in action_pools[i]:
+                action_available[i] = True
+
+        # Check that <belief> appears before <action>
+        belief_pos = output.lower().find("<belief>")
+        action_pos = output.lower().find("<action>")
+        if belief_pos == -1 or action_pos == -1 or belief_pos > action_pos:
+            valid = 0
+
+        # Optional: check for <reasoning> (encouraged but not required)
+        reasoning_matches = re.findall(r"<reasoning>(.*?)</reasoning>", output, re.DOTALL | re.IGNORECASE)
+        # Having reasoning is good, but not having it doesn't make output invalid
+        # Just log it for potential future use
+
+        # If invalid, use fallback
+        if not act_str:
+            act_str = output.lower()[-30:]  # Fallback to last 30 chars
+
+        actions_out.append(act_str)
+        valids.append(valid)
+        beliefs.append(belief_text if valid else "")
+
+    return actions_out, valids, beliefs, action_available

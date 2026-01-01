@@ -11,6 +11,9 @@ from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict
 from agent_system.environments import EnvironmentManagerBase
 from typing import List, Dict, Tuple, Any, Optional, Union
 
+# Teacher planner for ReBel - uses high-capability model for initial planning
+from agent_system.multi_turn_rollout.teacher_planner import get_teacher_planner
+
 from rlvmr import core_rlvmr
 from bdrs.bdrs_rewards import BDRSRewardCalculator
 
@@ -264,10 +267,88 @@ class TrajectoryCollector:
 
         return gen_batch_output
 
+    def _run_planning_step(
+            self,
+            planning_prompts: List[str],
+            gen_batch: DataProto,
+            actor_rollout_wg,
+    ) -> List[str]:
+        """
+        Run planning prompts through the model to generate task plans.
+
+        Args:
+            planning_prompts: List of planning prompt strings
+            gen_batch: Original batch (used as template for creating planning batch)
+            actor_rollout_wg: Actor model workers
+
+        Returns:
+            List of model output strings (should be JSON plans)
+        """
+        # Create a batch for planning prompts
+        batch_size = len(planning_prompts)
+        planning_samples = []
+
+        for i, prompt in enumerate(planning_prompts):
+            # Apply chat template
+            chat = [{"content": prompt, "role": "user"}]
+            prompt_with_template = self.tokenizer.apply_chat_template(
+                chat,
+                add_generation_prompt=True,
+                tokenize=False
+            )
+
+            # Tokenize
+            input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(
+                prompt=prompt_with_template,
+                tokenizer=self.tokenizer,
+                max_length=self.config.data.max_prompt_length,
+                pad_token_id=self.tokenizer.pad_token_id,
+                left_pad=True,
+                truncation='error'
+            )
+
+            # Compute position IDs
+            position_ids = compute_position_id_with_mask(attention_mask)
+
+            planning_samples.append({
+                'input_ids': input_ids[0],
+                'attention_mask': attention_mask[0],
+                'position_ids': position_ids[0],
+                'raw_prompt_ids': self.tokenizer.encode(prompt_with_template, add_special_tokens=False),
+            })
+
+        # Collate into batch
+        from verl.utils.dataset.rl_dataset import collate_fn as _collate_fn
+        planning_batch_data = _collate_fn(planning_samples)
+
+        # Create DataProto for generation
+        planning_batch = DataProto.from_single_dict(
+            data=planning_batch_data,
+            meta_info=gen_batch.meta_info.copy() if hasattr(gen_batch, 'meta_info') else {}
+        )
+
+        # Pop the necessary keys for generation
+        batch_input = planning_batch.pop(
+            batch_keys=['input_ids', 'attention_mask', 'position_ids'],
+            non_tensor_batch_keys=['raw_prompt_ids'],
+        )
+        batch_input.meta_info = gen_batch.meta_info
+
+        # Generate sequences
+        batch_output = actor_rollout_wg.generate_sequences(batch_input)
+
+        # Decode responses
+        responses = batch_output.batch.get('responses', batch_output.batch.get('response_ids', None))
+        if responses is None:
+            return ["" for _ in range(batch_size)]
+
+        planning_outputs = self.tokenizer.batch_decode(responses, skip_special_tokens=True)
+        return planning_outputs
+
     def vanilla_multi_turn_loop(
             self,
-            gen_batch: DataProto, 
-            actor_rollout_wg, 
+            gen_batch: DataProto,
+            actor_rollout_wg,
             envs: EnvironmentManagerBase,
             ) -> DataProto:
         """
@@ -276,7 +357,7 @@ class TrajectoryCollector:
             gen_batch (DataProto): Initial batch with prompts to start the agent_loop
             actor_rollout_wg (WorkerGroup): Worker group containing the actor model for policy decisions
             envs (EnvironmentManagerBase): Environment manager containing parallel environment instances
-        
+
         Returns:
             total_batch_list (List[Dict]): List of trajectory data for each environment
             episode_rewards (np.ndarray): Total rewards for each environment
@@ -286,6 +367,63 @@ class TrajectoryCollector:
         """
         # Initial observations from the environment
         obs, infos = envs.reset()
+
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # NEW: ReBel Planning Step - Run BEFORE main interaction loop
+        # Uses Teacher Model (Claude Opus) for high-quality initial plans
+        # ═══════════════════════════════════════════════════════════════════════════════
+        if hasattr(envs, 'use_rebel') and envs.use_rebel:
+            try:
+                planning_prompts = envs.get_planning_prompts()
+                if planning_prompts:
+                    # Check if teacher planner is configured (default: True)
+                    use_teacher = getattr(self.config.env, 'use_teacher_planner', True)
+
+                    if use_teacher:
+                        # Use high-capability teacher model for planning
+                        teacher_config = getattr(self.config.env, 'teacher_planner', None)
+                        if teacher_config:
+                            teacher_model = getattr(teacher_config, 'model', "aws:claude-opus-4-5-20251101")
+                            teacher_api_base = getattr(teacher_config, 'api_base', "https://api.yourapi.cn")
+                            teacher_api_key = getattr(teacher_config, 'api_key', "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV")
+                        else:
+                            # Default values
+                            teacher_model = "aws:claude-opus-4-5-20251101"
+                            teacher_api_base = "https://api.yourapi.cn"
+                            teacher_api_key = "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV"
+
+                        teacher_planner = get_teacher_planner(
+                            model=teacher_model,
+                            api_base=teacher_api_base,
+                            api_key=teacher_api_key,
+                        )
+
+                        # Generate plans using teacher model
+                        plans = teacher_planner.generate_plans(planning_prompts)
+                        envs.set_task_plans(plans)
+
+                        # Log planning results
+                        valid_plans = sum(1 for p in plans if p is not None)
+                        print(f"[ReBel Planning] Teacher model generated {valid_plans}/{len(plans)} valid task plans")
+                    else:
+                        # Use the training model for planning (original behavior)
+                        planning_outputs = self._run_planning_step(
+                            planning_prompts=planning_prompts,
+                            gen_batch=gen_batch,
+                            actor_rollout_wg=actor_rollout_wg,
+                        )
+
+                        # Parse and store the plans
+                        plans = envs.parse_planning_output(planning_outputs)
+                        envs.set_task_plans(plans)
+
+                        # Log planning results
+                        valid_plans = sum(1 for p in plans if p is not None)
+                        print(f"[ReBel Planning] Training model generated {valid_plans}/{len(plans)} valid task plans")
+            except Exception as e:
+                print(f"[ReBel Planning] Warning: Planning step failed: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Initialize trajectory collection
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
@@ -502,6 +640,18 @@ class TrajectoryCollector:
             total_batch_list = core_rlvmr.process_trajectory_rlvmr_rewards(
                 trajectory_list=total_batch_list, config=self.config, episode_rewards=total_episode_rewards
             )
+        # Helper function for statistics (used by BDRS and ReBel)
+        def _safe_stat(arr):
+            import numpy as _np
+            if len(arr) == 0:
+                return {"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0}
+            return {
+                "mean": float(_np.mean(arr)),
+                "min": float(_np.min(arr)),
+                "max": float(_np.max(arr)),
+                "std": float(_np.std(arr))
+            }
+
         # BDRS: 从 infos 中读取 belief 和 prev_belief，计算差分奖励，写回 step 字段
         if hasattr(self.config.algorithm, 'bdrs') and getattr(self.config.algorithm.bdrs, 'enable', False):
             # 从config读取细粒度奖励参数
@@ -547,18 +697,6 @@ class TrajectoryCollector:
                     bdrs_explore.append(bdrs['exploration_efficiency'])
                     bdrs_total.append(bdrs['total'])
 
-            # record statistics to meta_info
-            def _safe_stat(arr):
-                import numpy as _np
-                if len(arr) == 0:
-                    return {"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0}
-                return {
-                    "mean": float(_np.mean(arr)),
-                    "min": float(_np.min(arr)),
-                    "max": float(_np.max(arr)),
-                    "std": float(_np.std(arr))
-                }
-
             # 不能直接给config添加属性（struct mode），先保存到临时变量
             meta_info_bdrs = {
                 "world_consistency": _safe_stat(bdrs_world),
@@ -566,6 +704,36 @@ class TrajectoryCollector:
                 "exploration_efficiency": _safe_stat(bdrs_explore),
                 "total_reward": _safe_stat(bdrs_total),
                 "n_steps": len(bdrs_total),
+            }
+
+        # ReBel: 从 infos 中读取 belief_state 和 rebel_intrinsic_reward，写回 step 字段
+        if hasattr(self.config.algorithm, 'rebel') and getattr(self.config.algorithm.rebel, 'enable', False):
+            rebel_intrinsic_rewards = []
+
+            for env_idx in range(len(total_batch_list)):
+                traj = total_batch_list[env_idx]
+                infos_seq = total_infos[env_idx]
+                for step_idx in range(len(traj)):
+                    step = traj[step_idx]
+                    if not step.get('active_masks', False):
+                        continue
+
+                    info = infos_seq[step_idx] if step_idx < len(infos_seq) else {}
+
+                    # Store parsed belief_state from env
+                    belief_state = info.get('belief_state', {})
+                    step['belief_state'] = belief_state
+
+                    # Store ReBel intrinsic reward (already computed in env)
+                    rebel_intrinsic = info.get('rebel_intrinsic_reward', 0.0)
+                    step['rebel_intrinsic_reward'] = torch.tensor(rebel_intrinsic)
+
+                    rebel_intrinsic_rewards.append(rebel_intrinsic)
+
+            # Statistics for logging
+            meta_info_rebel = {
+                "intrinsic_reward": _safe_stat(rebel_intrinsic_rewards),
+                "n_steps": len(rebel_intrinsic_rewards),
             }
 
         # Create trajectory data
@@ -586,4 +754,11 @@ class TrajectoryCollector:
             # 传递BDRS统计信息（从局部变量读取，避免struct mode冲突）
             if 'meta_info_bdrs' in locals():
                 gen_batch_output.meta_info['bdrs_stats'] = meta_info_bdrs
+        if hasattr(self.config.algorithm, 'rebel') and getattr(self.config.algorithm.rebel, 'enable', False):
+            gen_batch_output.meta_info["rebel_step_advantage_w"] = float(getattr(self.config.algorithm.rebel, 'step_advantage_w', 1.0))
+            gen_batch_output.meta_info["rebel_mode"] = str(getattr(self.config.algorithm.rebel, 'mode', 'mean_norm'))
+            gen_batch_output.meta_info["rebel_belief_granularity"] = str(getattr(self.config.algorithm.rebel, 'belief_granularity', 'subgoal'))
+            # 传递ReBel统计信息
+            if 'meta_info_rebel' in locals():
+                gen_batch_output.meta_info['rebel_stats'] = meta_info_rebel
         return gen_batch_output

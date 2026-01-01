@@ -22,40 +22,40 @@ from together import Together
 from agent_system.environments.env_package.alfworld.envs import load_config_file
 from agent_system.environments.env_package.alfworld.alfworld.agents.environment import get_environment
 
-def build_env(env_name, env_num=1, seed=1, history_length=2, alf_env_type="alfworld/AlfredTWEnv", game_files=None, use_bdrs=True):
+def build_env(env_name, env_num=1, seed=1, history_length=2, alf_env_type="alfworld/AlfredTWEnv", game_files=None, use_rebel=True):
     group_n = 1
     if env_name == "alfworld":
         # Test AlfWorldEnvironmentManager
-        from agent_system.environments.env_package.alfworld import alfworld_projection, alfworld_projection_bdrs
+        from agent_system.environments.env_package.alfworld import alfworld_projection, alfworld_projection_rebel
         from agent_system.environments.env_package.alfworld import build_alfworld_envs
         alf_config_path = os.path.join(os.path.dirname(__file__), '../../../agent_system/environments/env_package/alfworld/configs/config_tw.yaml')
         # Now with game_files support!
         envs = build_alfworld_envs(alf_config_path, seed=seed, env_num=env_num, group_n=group_n, is_train=True)
 
-        # DEBUG: 打印use_bdrs值
-        print(f"\n{'='*80}")
-        print(f"[DEBUG build_env] use_bdrs参数 = {use_bdrs}")
-        print(f"{'='*80}\n")
-
-        # Select projection function based on use_bdrs flag
-        projection_func = alfworld_projection_bdrs if use_bdrs else alfworld_projection
-        print(f"[DEBUG build_env] 选择的projection函数 = {projection_func.__name__}")
+        # Select projection function based on use_rebel flag
+        projection_func = alfworld_projection_rebel if use_rebel else alfworld_projection
+        print(f"[DEBUG build_env] Using projection function: {projection_func.__name__}")
 
         # Minimal config object with required fields
         cfg = SimpleNamespace(
             env=SimpleNamespace(
                 env_name=alf_env_type,
                 history_length=history_length,
-                alfworld=SimpleNamespace(meta_think=False, action_only=False)  # 明确设置action_only=False
+                alfworld=SimpleNamespace()
             ),
             algorithm=SimpleNamespace(
-                bdrs=SimpleNamespace(enable=use_bdrs)
+                rebel=SimpleNamespace(
+                    enable=use_rebel,
+                    alpha=0.3,
+                    beta=0.5,
+                    gamma=0.2
+                )
             )
         )
-        print(f"[DEBUG build_env] cfg.algorithm.bdrs.enable = {cfg.algorithm.bdrs.enable}")
+        print(f"[DEBUG build_env] ReBel enabled: {cfg.algorithm.rebel.enable}")
 
-        env_manager = AlfWorldEnvironmentManager(envs, projection_func, env_name, cfg)  # 正确传递env_name!
-        print(f"[DEBUG build_env] AlfWorldEnvironmentManager已创建\n")
+        env_manager = AlfWorldEnvironmentManager(envs, projection_func, alf_env_type, cfg)
+        print(f"[DEBUG build_env] AlfWorldEnvironmentManager created\n")
     else:
         raise ValueError(f"Unsupported environment name: {env_name}")
 
@@ -88,11 +88,12 @@ class Agent:
             model=self.model_name,
             messages=[
                 {
-                    "role": "user", 
+                    "role": "user",
                     "content": obs
                 }
             ],
             temperature=self.temperature,
+            max_tokens=512,  # 足够长以包含belief state + action
             n=1,
         )
         action = response.choices[0].message.content.strip()
@@ -141,11 +142,13 @@ if __name__ == "__main__":
     parser.add_argument("--alf_env_type", default="alfworld/AlfredTWEnv", help="alfworld/AlfredTWEnv or alfworld/AlfredThorEnv")
     parser.add_argument("--unique_envs", action="store_true", help="确保每个环境使用唯一的游戏文件（无重复采样）")
     parser.add_argument("--dry_run", action="store_true", help="仅打印唯一任务的批次分配，不创建环境、不调用模型")
-    parser.add_argument("--no_bdrs", action="store_true", default=False, help="禁用BDRS格式，使用<think>格式")
+    parser.add_argument("--use_rebel", action="store_true", default=True, help="启用ReBel框架（信念状态+密集奖励）")
+    parser.add_argument("--no_rebel", action="store_true", default=False, help="禁用ReBel，使用基础<think>格式")
     args = parser.parse_args()
 
-    # 修复use_bdrs逻辑：默认True，除非明确指定--no_bdrs
-    args.use_bdrs = not args.no_bdrs
+    # ReBel配置：默认True，除非明确指定--no_rebel
+    if args.no_rebel:
+        args.use_rebel = False
 
     # -------- logging ----------
     os.makedirs("logs/alfworld", exist_ok=True)
@@ -158,9 +161,10 @@ if __name__ == "__main__":
         handlers=[logging.FileHandler(log_fp, encoding="utf-8"), logging.StreamHandler()],
     )
 
-    # 关键：打印BDRS配置以便调试
+    # 关键：打印ReBel配置以便调试
     logging.info(f"=" * 60)
-    logging.info(f"BDRS Configuration: use_bdrs={args.use_bdrs}")
+    logging.info(f"ReBel Configuration: use_rebel={args.use_rebel}")
+    logging.info(f"ReBel: Belief-Driven Dense Reward Framework")
     logging.info(f"=" * 60)
 
     # -------- Parameters ----------
@@ -218,6 +222,14 @@ if __name__ == "__main__":
     all_episode_rewards = []
     all_valid_actions = []
     all_total_actions = []
+
+    # ReBel全局指标
+    all_rebel_consistency = []
+    all_rebel_progress = []
+    all_rebel_exploration = []
+    all_belief_parse_rates = []
+    all_hallucination_rates = []
+    all_repeat_action_rates = []
 
     # Helper: collect all train game files
     def collect_all_game_files(alf_config_path, is_train=True, eval_dataset='eval_in_distribution'):
@@ -281,7 +293,7 @@ if __name__ == "__main__":
             history_length=args.history_length,
             alf_env_type=args.alf_env_type,
             game_files=batch_game_files,
-            use_bdrs=args.use_bdrs,  # Pass BDRS flag
+            use_rebel=args.use_rebel,  # Pass ReBel flag
         )
         
         # Batch-level statistics
@@ -293,6 +305,14 @@ if __name__ == "__main__":
         batch_episode_rewards = []  # 记录每个episode的总奖励
         batch_valid_actions = []    # 记录有效动作数
         batch_total_actions = []    # 记录总动作数
+
+        # ReBel专用指标
+        batch_rebel_consistency = []   # 环境一致性奖励
+        batch_rebel_progress = []      # 任务进度奖励
+        batch_rebel_exploration = []   # 探索效率奖励
+        batch_belief_parse_rates = []  # 信念解析成功率
+        batch_hallucination_rates = [] # 幻觉率（信念与真实不符）
+        batch_repeat_action_rates = [] # 重复动作比例
 
         try:
             # ======================= Test Loop for this Batch =======================
@@ -320,6 +340,17 @@ if __name__ == "__main__":
                 episode_rewards_this_round = np.zeros(current_batch_size, dtype=float)  # 每个env的累积奖励
                 valid_actions_this_round = np.zeros(current_batch_size, dtype=int)  # 每个env的有效动作数
                 total_actions_this_round = np.zeros(current_batch_size, dtype=int)  # 每个env的总动作数
+
+                # ReBel专用指标追踪
+                rebel_consistency_sum = np.zeros(current_batch_size, dtype=float)
+                rebel_progress_sum = np.zeros(current_batch_size, dtype=float)
+                rebel_exploration_sum = np.zeros(current_batch_size, dtype=float)
+                belief_parsed_count = np.zeros(current_batch_size, dtype=int)
+                belief_total_count = np.zeros(current_batch_size, dtype=int)
+
+                # 追踪重复动作和幻觉
+                action_history_per_env = [[] for _ in range(current_batch_size)]
+                repeat_action_count = np.zeros(current_batch_size, dtype=int)
 
                 for step_idx in range(max_steps):
                     logging.info(f"Batch {batch_idx + 1} Step {step_idx}; Dones ({np.array(env_dones).sum().item()}/{current_batch_size}); SR {overall_success_this_round.mean().item()}")
@@ -358,6 +389,24 @@ if __name__ == "__main__":
                             episode_rewards_this_round[i] += rewards[i]
                             episode_lengths_this_round[i] += 1
 
+                            # ReBel奖励分解追踪
+                            rebel_rewards = infos[i].get("rebel_rewards", {})
+                            rebel_consistency_sum[i] += rebel_rewards.get("r_consistency", 0.0)
+                            rebel_progress_sum[i] += rebel_rewards.get("r_progress", 0.0)
+                            rebel_exploration_sum[i] += rebel_rewards.get("r_exploration", 0.0)
+
+                            # 信念解析追踪
+                            belief_total_count[i] += 1
+                            if infos[i].get("belief_state") is not None:
+                                belief_parsed_count[i] += 1
+
+                            # 重复动作检测
+                            current_action = actions[i] if i < len(actions) else None
+                            if current_action:
+                                if len(action_history_per_env[i]) > 0 and current_action == action_history_per_env[i][-1]:
+                                    repeat_action_count[i] += 1
+                                action_history_per_env[i].append(current_action)
+
                             # Check if action was valid (no error message in observation)
                             is_valid = "Nothing happens" not in obs["text"][i] and \
                                       "not valid" not in obs["text"][i].lower() and \
@@ -379,6 +428,10 @@ if __name__ == "__main__":
                         # Dump trajectory row (only for envs that acted this step, including final step)
                         if args.dump_path and (i in idx_map):
                             try:
+                                # Extract ReBel rewards and belief state
+                                rebel_rewards = infos[i].get("rebel_rewards", {})
+                                belief_state = infos[i].get("belief_state", None)
+
                                 row = {
                                     "batch_idx": batch_idx,
                                     "test_idx": test_idx,
@@ -390,6 +443,15 @@ if __name__ == "__main__":
                                     # Also save the executed (post-projection) action for debugging
                                     "action_exec": actions[i],
                                     "reward": float(rewards[i]) if i < len(rewards) else None,
+                                    # ReBel密集奖励分解
+                                    "r_consistency": rebel_rewards.get("r_consistency", 0.0),
+                                    "r_progress": rebel_rewards.get("r_progress", 0.0),
+                                    "r_exploration": rebel_rewards.get("r_exploration", 0.0),
+                                    "r_intrinsic_total": rebel_rewards.get("r_intrinsic_total", 0.0),
+                                    # 信念状态
+                                    "belief_parsed": belief_state is not None,
+                                    "belief_state": belief_state,
+                                    # 基础指标
                                     "done": bool(dones[i]) if i < len(dones) else None,
                                     "won": bool(infos[i].get("won", False)),
                                     "gamefile": infos[i].get("extra.gamefile"),
@@ -499,6 +561,25 @@ if __name__ == "__main__":
                 batch_valid_actions.extend(valid_actions_this_round.tolist())
                 batch_total_actions.extend(total_actions_this_round.tolist())
 
+                # ReBel指标汇总
+                for i in range(current_batch_size):
+                    steps = episode_lengths_this_round[i] if episode_lengths_this_round[i] > 0 else 1
+                    batch_rebel_consistency.append(rebel_consistency_sum[i] / steps)
+                    batch_rebel_progress.append(rebel_progress_sum[i] / steps)
+                    batch_rebel_exploration.append(rebel_exploration_sum[i] / steps)
+
+                    # 信念解析率
+                    parse_rate = belief_parsed_count[i] / belief_total_count[i] if belief_total_count[i] > 0 else 0.0
+                    batch_belief_parse_rates.append(parse_rate)
+
+                    # 幻觉率（信念解析失败或r_consistency低）
+                    hallucination_rate = 1.0 - parse_rate  # 简化版：无法解析=幻觉
+                    batch_hallucination_rates.append(hallucination_rate)
+
+                    # 重复动作率
+                    repeat_rate = repeat_action_count[i] / steps if steps > 0 else 0.0
+                    batch_repeat_action_rates.append(repeat_rate)
+
                 logging.info(f"Batch {batch_idx + 1} Test {test_idx} overall success: {round_success_rate:.4f}")
 
                 for task in TASKS + ["other"]:
@@ -525,6 +606,14 @@ if __name__ == "__main__":
             all_episode_rewards.extend(batch_episode_rewards)
             all_valid_actions.extend(batch_valid_actions)
             all_total_actions.extend(batch_total_actions)
+
+            # ReBel指标累积
+            all_rebel_consistency.extend(batch_rebel_consistency)
+            all_rebel_progress.extend(batch_rebel_progress)
+            all_rebel_exploration.extend(batch_rebel_exploration)
+            all_belief_parse_rates.extend(batch_belief_parse_rates)
+            all_hallucination_rates.extend(batch_hallucination_rates)
+            all_repeat_action_rates.extend(batch_repeat_action_rates)
 
             # Update global env counter
             global_env_counter += current_batch_size
@@ -563,6 +652,50 @@ if __name__ == "__main__":
     if sum(all_total_actions) > 0:
         valid_ratio = sum(all_valid_actions) / sum(all_total_actions)
         logging.info(f"✅ Valid Action Ratio: {valid_ratio:.2%}")
+
+    # ========== ReBel专用指标 ==========
+    if args.use_rebel and len(all_rebel_consistency) > 0:
+        logging.info(f"\n{'='*50}")
+        logging.info(f"🧠 ReBel Framework Metrics:")
+        logging.info(f"{'='*50}")
+
+        # 密集奖励分解
+        avg_r_consistency = np.mean(all_rebel_consistency)
+        avg_r_progress = np.mean(all_rebel_progress)
+        avg_r_exploration = np.mean(all_rebel_exploration)
+        logging.info(f"📊 Average Intrinsic Rewards (per step):")
+        logging.info(f"   - r_consistency (环境对齐): {avg_r_consistency:.4f}")
+        logging.info(f"   - r_progress (任务理解):    {avg_r_progress:.4f}")
+        logging.info(f"   - r_exploration (探索效率): {avg_r_exploration:.4f}")
+        logging.info(f"   - r_intrinsic_total:       {avg_r_consistency + avg_r_progress + avg_r_exploration:.4f}")
+
+        # 信念状态质量
+        avg_belief_parse = np.mean(all_belief_parse_rates)
+        avg_hallucination = np.mean(all_hallucination_rates)
+        logging.info(f"\n🔍 Belief State Quality:")
+        logging.info(f"   - Belief Parse Success Rate: {avg_belief_parse:.2%}")
+        logging.info(f"   - Hallucination Rate:        {avg_hallucination:.2%}")
+
+        # 行为质量
+        avg_repeat_rate = np.mean(all_repeat_action_rates)
+        invalid_ratio = 1 - valid_ratio if sum(all_total_actions) > 0 else 0
+        logging.info(f"\n⚙️  Action Quality:")
+        logging.info(f"   - Repeat Action Rate:    {avg_repeat_rate:.2%}")
+        logging.info(f"   - Invalid Action Rate:   {invalid_ratio:.2%}")
+
+        # ReBel效果评估
+        logging.info(f"\n📈 ReBel Framework Assessment:")
+        if avg_r_consistency > 0.05 and avg_r_progress > 0.05:
+            logging.info(f"   ✅ Intrinsic rewards are being calculated (ReBel is ACTIVE)")
+        else:
+            logging.info(f"   ⚠️  Intrinsic rewards are very low (check ReBel configuration)")
+
+        if avg_belief_parse > 0.8:
+            logging.info(f"   ✅ Belief states are well-formed (>80% parse rate)")
+        elif avg_belief_parse > 0.5:
+            logging.info(f"   ⚠️  Belief parsing is moderate ({avg_belief_parse:.0%})")
+        else:
+            logging.info(f"   ❌ Belief parsing is poor (<50%), check prompt/model")
 
     logging.info("\n" + "="*50)
     logging.info("Task-Specific Success Rates:")

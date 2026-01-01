@@ -93,5 +93,10 @@ def copy_local_path_from_hdfs(src: str, cache_dir=None, filelock='.file.lock', v
                 copy(src, local_path)
         return local_path
     else:
-        # Convert to absolute path for compatibility with Hugging Face
+        # Check if this is a HuggingFace model identifier (format: "org/model" or "model")
+        # Don't convert these to absolute paths as HF will handle them
+        if '/' in src and not os.path.exists(src):
+            # Likely a HuggingFace model ID like "Qwen/Qwen2.5-1.5B-Instruct"
+            return src
+        # Convert to absolute path for local files
         return os.path.abspath(src)

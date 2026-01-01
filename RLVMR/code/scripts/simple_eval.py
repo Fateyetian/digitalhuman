@@ -2,15 +2,25 @@
 """
 Simple standalone evaluation script - No Ray required
 Directly uses ALFWorld environments with vLLM inference
+Works with batch/vectorized environments
+
+Uses the same prompt format as SFT training data (from rebel_prompts.py)
+Saves trajectories to JSONL file for analysis
 """
 
 import os
 import sys
+
+# Force vLLM to use V0 engine to avoid CUDA multiprocessing issues
+os.environ["VLLM_USE_V1"] = "0"
+
 import argparse
 import time
+import json
 import numpy as np
 from typing import Dict, List, Any
 from pathlib import Path
+from datetime import datetime
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -28,6 +38,12 @@ except ImportError:
 
 # Import ALFWorld env directly
 from agent_system.environments.env_package.alfworld import build_alfworld_envs
+
+# Import ReBel prompt templates (same as used in SFT training)
+from agent_system.environments.prompts.rebel_prompts import (
+    ALFWORLD_REBEL_TEMPLATE_NO_HIS_RL,
+    ALFWORLD_REBEL_TEMPLATE_RL
+)
 
 
 def parse_args():
@@ -56,84 +72,115 @@ def parse_args():
                         help="Print detailed episode info")
     parser.add_argument("--generalization_level", type=int, default=0,
                         help="ALFWorld generalization level (0, 1, or 2)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Directory to save trajectories (default: ./results/eval_TIMESTAMP)")
     return parser.parse_args()
 
 
-def build_prompt(task_desc: str, history: List[Dict[str, str]], current_obs: str) -> str:
-    """Build prompt for the model"""
+def build_prompt(task_desc: str, history: List[Dict[str, str]], current_obs: str,
+                  step_count: int = 0, planning: str = "None",
+                  admissible_actions: List[str] = None,
+                  current_belief_state: str = None) -> str:
+    """
+    Build prompt for the model - ReBel format with admissible actions.
 
-    # Initial system message
-    prompt = """You are an autonomous intelligent agent tasked with navigating a home.
-You will be given a household task. Your goal is to complete the task.
+    ReBel方法不传递原始历史(observation/action)，而是通过current_belief_state传递累积状态。
+    与coldstart训练数据格式一致：
+    - action_history = "None"
+    - step_count = 0
+    - history_length = 2
+    """
+    # Format admissible actions
+    if admissible_actions:
+        actions_str = ", ".join(admissible_actions)
+    else:
+        actions_str = "look, inventory"
 
-At each step, you will receive:
-- Task description
-- Observation of current environment state
+    if step_count == 0 or not history:
+        # First step - use no history template
+        prompt = ALFWORLD_REBEL_TEMPLATE_NO_HIS_RL.format(
+            current_observation=current_obs,
+            admissible_actions=actions_str
+        )
+    else:
+        # Subsequent steps - matching coldstart format exactly
+        # NO raw history, only belief state
+        if current_belief_state is None:
+            current_belief_state = "Update based on new observation."
 
-You should provide:
-- Action: A single command to execute
-
-Format your response as follows:
-Action: <your action here>
-
-Available actions include:
-- go to <receptacle>
-- take <object> from <receptacle>
-- put <object> in/on <receptacle>
-- open <receptacle>
-- close <receptacle>
-- toggle <object>
-- clean <object> with <receptacle>
-- heat <object> with <receptacle>
-- cool <object> with <receptacle>
-- use <object>
-- look
-- inventory
-- examine <object>
-
-"""
-
-    # Add task
-    prompt += f"\nTask: {task_desc}\n\n"
-
-    # Add history
-    if history:
-        prompt += "Previous interactions:\n"
-        for turn in history[-5:]:  # Last 5 turns to keep context manageable
-            prompt += f"Observation: {turn['obs']}\n"
-            prompt += f"Action: {turn['action']}\n"
-        prompt += "\n"
-
-    # Current observation
-    prompt += f"Current Observation: {current_obs}\n\n"
-    prompt += "What is your action?"
+        prompt = ALFWORLD_REBEL_TEMPLATE_RL.format(
+            task_description=task_desc,
+            step_count=0,  # Always 0 like coldstart
+            history_length=2,  # Always 2 like coldstart
+            action_history="None",  # Always None like coldstart
+            current_step=1,  # Always 1 like coldstart
+            current_observation=current_obs,
+            admissible_actions=actions_str,
+            current_belief_state=current_belief_state,
+            planning=planning if planning else "None"
+        )
 
     return prompt
 
 
+def extract_belief_and_reasoning(text: str) -> tuple:
+    """Extract belief state and reasoning from model output for next step."""
+    import re
+
+    belief_state = None
+    reasoning = None
+
+    # Extract belief
+    belief_match = re.search(r'<belief>\s*(.*?)\s*</belief>', text, re.DOTALL | re.IGNORECASE)
+    if belief_match:
+        belief_state = belief_match.group(1).strip()
+
+    # Extract reasoning (use as planning for next step)
+    reasoning_match = re.search(r'<reasoning>\s*(.*?)\s*</reasoning>', text, re.DOTALL | re.IGNORECASE)
+    if reasoning_match:
+        reasoning = reasoning_match.group(1).strip()
+
+    return belief_state, reasoning
+
+
 def extract_action(text: str) -> str:
-    """Extract action from model output"""
+    """Extract action from model output (ReBel format)"""
+    import re
     text = text.strip()
 
-    # Look for "Action:" prefix
+    # First try to extract from <action>...</action> tags (ReBel format)
+    action_match = re.search(r'<action>\s*(.*?)\s*</action>', text, re.DOTALL | re.IGNORECASE)
+    if action_match:
+        action = action_match.group(1).strip()
+        # Clean up the action - take first line if multiple lines
+        action = action.split('\n')[0].strip()
+        return action
+
+    # Fallback: Look for "Action:" prefix
     if "Action:" in text:
         action = text.split("Action:")[-1].strip()
-    else:
-        # Take first non-empty line
-        lines = [line.strip() for line in text.split("\n") if line.strip()]
-        action = lines[0] if lines else text
+        action = action.split('\n')[0].strip()
+        return action
 
-    # Remove any trailing punctuation or quotes
-    action = action.strip('."\'')
+    # Last resort: Take first non-empty line that looks like an action
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    for line in lines:
+        # Skip lines that are clearly not actions
+        if line.startswith('<') or line.startswith('{') or line.startswith('```'):
+            continue
+        if any(keyword in line.lower() for keyword in ['go to', 'take', 'put', 'open', 'close', 'use', 'heat', 'cool', 'clean']):
+            return line.strip('."\'')
 
-    return action
+    # If nothing found, return first line
+    return lines[0] if lines else "look"
 
 
 class SimpleEvaluator:
-    """Simple evaluator without Ray"""
+    """Simple evaluator for batch environments"""
 
     def __init__(self, args):
         self.args = args
+        self.num_envs = args.num_tasks
 
         # Initialize SwanLab
         if SWANLAB_AVAILABLE:
@@ -172,135 +219,209 @@ class SimpleEvaluator:
 
         # Create environments
         print(f"Creating {args.num_tasks} ALFWorld environments...")
+        alf_config_path = os.path.join(
+            os.path.dirname(__file__),
+            '../agent_system/environments/env_package/alfworld/configs/config_tw.yaml'
+        )
         self.envs = build_alfworld_envs(
-            n_envs=args.num_tasks,
+            alf_config_path=alf_config_path,
             seed=args.seed,
-            generalization_level=args.generalization_level
+            env_num=args.num_tasks,
+            group_n=1,
+            is_train=False
         )
         print("Environments created!")
 
-    def evaluate_single_task(self, env_id: int) -> Dict[str, Any]:
-        """Evaluate a single task"""
+        # Setup output directory for trajectories
+        if args.output_dir:
+            self.output_dir = Path(args.output_dir)
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.output_dir = Path(f"./results/eval_{timestamp}")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.trajectory_file = self.output_dir / "trajectory.jsonl"
+        print(f"Trajectories will be saved to: {self.trajectory_file}")
 
-        # Reset environment
-        text_obs, image_obs, info = self.envs.reset(env_id)
+    def evaluate(self) -> Dict[str, Any]:
+        """Run evaluation on all tasks in parallel"""
+        print(f"\nStarting evaluation on {self.num_envs} tasks...")
+        print("=" * 80)
 
-        # Extract task description from first observation
-        task_desc = text_obs.split("\n")[0] if "\n" in text_obs else "Complete the task"
+        start_time = time.time()
 
-        history = []
-        episode_data = {
-            "env_id": env_id,
-            "task": task_desc,
+        # Open trajectory file for writing
+        traj_file = open(self.trajectory_file, 'w')
+
+        # Reset all environments
+        text_obs_list, image_obs_list, info_list = self.envs.reset()
+
+        # Get initial admissible actions from info
+        admissible_actions_list = []
+        for info in info_list:
+            if info and 'admissible_commands' in info:
+                admissible_actions_list.append(info['admissible_commands'])
+            else:
+                admissible_actions_list.append(['look', 'inventory'])
+
+        # Initialize tracking for each environment
+        histories = [[] for _ in range(self.num_envs)]
+        task_descs = []
+        for obs in text_obs_list:
+            # Extract task from "Your task is to: ..." line
+            if "Your task is to:" in obs:
+                task_desc = obs.split("Your task is to:")[-1].split("\n")[0].strip()
+            else:
+                task_desc = "Complete the task"
+            task_descs.append(task_desc)
+
+        episode_data = [{
+            "env_id": i,
+            "task": task_descs[i],
             "steps": 0,
             "success": False,
             "reward": 0.0,
             "actions": [],
-            "observations": [text_obs],
-        }
+            "observations": [text_obs_list[i]],
+        } for i in range(self.num_envs)]
 
-        done = False
-        step = 0
-        total_reward = 0
+        dones = [False] * self.num_envs
+        total_rewards = [0.0] * self.num_envs
+        plannings = ["None"] * self.num_envs  # Track planning/reasoning for each env
+        belief_states = [None] * self.num_envs  # Track belief state for each env
 
-        while not done and step < self.args.max_steps:
-            # Build prompt
-            prompt = build_prompt(task_desc, history, text_obs)
+        # Run episodes
+        for step in range(self.args.max_steps):
+            # Build prompts for all active environments
+            prompts = []
+            active_indices = []
+            for i in range(self.num_envs):
+                if not dones[i]:
+                    prompt = build_prompt(
+                        task_desc=task_descs[i],
+                        history=histories[i],
+                        current_obs=text_obs_list[i],
+                        step_count=step,
+                        planning=plannings[i],
+                        admissible_actions=admissible_actions_list[i],
+                        current_belief_state=belief_states[i]
+                    )
+                    prompts.append(prompt)
+                    active_indices.append(i)
 
-            # Generate action
-            outputs = self.llm.generate([prompt], self.sampling_params)
-            generated_text = outputs[0].outputs[0].text
-            action = extract_action(generated_text)
+            if not prompts:
+                break  # All environments done
 
-            episode_data["actions"].append(action)
+            # Generate actions for all active environments
+            outputs = self.llm.generate(prompts, self.sampling_params)
 
-            # Execute action
-            text_obs, image_obs, reward, done, info = self.envs.step([action], [env_id])
-            text_obs = text_obs[0]  # Unpack from list
-            reward = reward[0]
-            done = done[0]
-            info = info[0]
+            # Extract actions, belief states, and reasoning
+            actions = ["look"] * self.num_envs  # Default action for done envs
+            generated_texts = [""] * self.num_envs
+            for j, idx in enumerate(active_indices):
+                generated_text = outputs[j].outputs[0].text
+                generated_texts[idx] = generated_text
+                action = extract_action(generated_text)
+                actions[idx] = action
+                episode_data[idx]["actions"].append(action)
 
-            # Update history
-            history.append({"obs": text_obs, "action": action})
-            episode_data["observations"].append(text_obs)
+                # Extract belief and reasoning for next step
+                belief, reasoning = extract_belief_and_reasoning(generated_text)
+                if belief:
+                    belief_states[idx] = belief
+                if reasoning:
+                    plannings[idx] = reasoning
 
-            total_reward += reward
-            step += 1
+            # Step all environments
+            prev_obs_list = text_obs_list.copy()
+            text_obs_list, image_obs_list, rewards, step_dones, infos = self.envs.step(actions)
 
-            if self.args.verbose:
-                print(f"  Step {step}: {action[:60]}...")
-                if reward > 0:
-                    print(f"    Reward: +{reward}")
+            # Update admissible actions from new infos
+            for i in range(self.num_envs):
+                if infos[i] and 'admissible_commands' in infos[i]:
+                    admissible_actions_list[i] = infos[i]['admissible_commands']
 
-        # Check success
-        success = done and (total_reward > 0 or info.get("won", False))
+            # Save trajectory for each active environment
+            for j, idx in enumerate(active_indices):
+                traj_record = {
+                    "env_id": idx,
+                    "step": step,
+                    "task": task_descs[idx],
+                    "prompt": prompts[j][:2000],  # Truncate for readability
+                    "model_output": generated_texts[idx],
+                    "action_extracted": actions[idx],
+                    "observation_before": prev_obs_list[idx][:500],
+                    "observation_after": text_obs_list[idx][:500],
+                    "reward": rewards[idx],
+                    "done": step_dones[idx],
+                    "won": infos[idx].get("won", False) if infos[idx] else False
+                }
+                traj_file.write(json.dumps(traj_record, ensure_ascii=False) + "\n")
 
-        episode_data["steps"] = step
-        episode_data["success"] = success
-        episode_data["reward"] = total_reward
+            # Update tracking
+            for i in range(self.num_envs):
+                if not dones[i]:
+                    histories[i].append({"obs": text_obs_list[i], "action": actions[i]})
+                    episode_data[i]["observations"].append(text_obs_list[i])
+                    total_rewards[i] += rewards[i]
+                    episode_data[i]["steps"] = step + 1
 
-        return episode_data
+                    if step_dones[i]:
+                        dones[i] = True
+                        success = total_rewards[i] > 0 or infos[i].get("won", False)
+                        episode_data[i]["success"] = success
+                        episode_data[i]["reward"] = total_rewards[i]
 
-    def evaluate(self) -> Dict[str, Any]:
-        """Run evaluation on all tasks"""
-        print(f"\nStarting evaluation on {self.args.num_tasks} tasks...")
-        print("=" * 80)
+            # Print progress
+            num_done = sum(dones)
+            num_success = sum(1 for ep in episode_data if ep["success"])
+            if self.args.verbose or (step + 1) % 5 == 0:
+                print(f"Step {step + 1}: {num_done}/{self.num_envs} done, {num_success} success")
 
-        results = []
-        success_count = 0
-        total_steps = []
-        total_rewards = []
+            if all(dones):
+                break
 
-        start_time = time.time()
-
-        for env_id in range(self.args.num_tasks):
-            print(f"\n[Task {env_id + 1}/{self.args.num_tasks}]")
-
-            try:
-                episode_data = self.evaluate_single_task(env_id)
-                results.append(episode_data)
-
-                # Update statistics
-                if episode_data["success"]:
-                    success_count += 1
-                total_steps.append(episode_data["steps"])
-                total_rewards.append(episode_data["reward"])
-
-                # Print progress
-                current_success_rate = success_count / (env_id + 1) * 100
-                print(f"  Success: {episode_data['success']} | "
-                      f"Steps: {episode_data['steps']} | "
-                      f"Reward: {episode_data['reward']:.1f}")
-                print(f"  Running Success Rate: {current_success_rate:.1f}%")
-
-                # Log to SwanLab (per task)
-                if self.run is not None:
-                    swanlab.log({
-                        "task/success": int(episode_data["success"]),
-                        "task/steps": episode_data["steps"],
-                        "task/reward": episode_data["reward"],
-                        "task/running_success_rate": current_success_rate,
-                    }, step=env_id)
-
-            except Exception as e:
-                print(f"  Error in task {env_id}: {e}")
-                import traceback
-                traceback.print_exc()
+        # Mark remaining as done
+        for i in range(self.num_envs):
+            if not dones[i]:
+                episode_data[i]["reward"] = total_rewards[i]
+                # Check if last info indicates success
+                episode_data[i]["success"] = total_rewards[i] > 0
 
         elapsed_time = time.time() - start_time
 
         # Compute final metrics
+        success_count = sum(1 for ep in episode_data if ep["success"])
+        steps_list = [ep["steps"] for ep in episode_data]
+        rewards_list = [ep["reward"] for ep in episode_data]
+
         final_metrics = {
-            "success_rate": success_count / self.args.num_tasks * 100,
-            "avg_steps": np.mean(total_steps),
-            "std_steps": np.std(total_steps),
-            "avg_reward": np.mean(total_rewards),
-            "total_tasks": self.args.num_tasks,
+            "success_rate": success_count / self.num_envs * 100,
+            "avg_steps": np.mean(steps_list),
+            "std_steps": np.std(steps_list),
+            "avg_reward": np.mean(rewards_list),
+            "total_tasks": self.num_envs,
             "successful_tasks": success_count,
-            "failed_tasks": self.args.num_tasks - success_count,
+            "failed_tasks": self.num_envs - success_count,
             "elapsed_time": elapsed_time,
         }
+
+        # Close trajectory file
+        traj_file.close()
+        print(f"\nTrajectories saved to: {self.trajectory_file}")
+
+        # Save summary
+        summary_file = self.output_dir / "summary.json"
+        with open(summary_file, 'w') as f:
+            json.dump({
+                "metrics": final_metrics,
+                "config": {
+                    "model_path": self.args.model_path,
+                    "num_tasks": self.args.num_tasks,
+                    "max_steps": self.args.max_steps,
+                    "temperature": self.args.temperature,
+                    "seed": self.args.seed,
+                }
+            }, f, indent=2)
 
         # Print summary
         print("\n" + "=" * 80)
@@ -310,7 +431,8 @@ class SimpleEvaluator:
         print(f"Successful Tasks: {final_metrics['successful_tasks']}/{final_metrics['total_tasks']}")
         print(f"Average Steps:    {final_metrics['avg_steps']:.2f} ± {final_metrics['std_steps']:.2f}")
         print(f"Average Reward:   {final_metrics['avg_reward']:.2f}")
-        print(f"Elapsed Time:     {elapsed_time:.1f}s ({elapsed_time/self.args.num_tasks:.1f}s per task)")
+        print(f"Elapsed Time:     {elapsed_time:.1f}s ({elapsed_time/self.num_envs:.1f}s per task)")
+        print(f"Trajectory File:  {self.trajectory_file}")
         print("=" * 80)
 
         # Log final metrics to SwanLab
@@ -329,7 +451,7 @@ class SimpleEvaluator:
 
         return {
             "metrics": final_metrics,
-            "results": results,
+            "results": episode_data,
         }
 
     def cleanup(self):

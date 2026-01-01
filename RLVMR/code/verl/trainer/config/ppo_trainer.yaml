@@ -209,6 +209,12 @@ algorithm:
     reward_new_entity: 0.05            # 发现新对象的奖励
     reward_new_location: 0.1           # 访问新房间的奖励
     penalty_revisit: -0.02             # 重复访问的惩罚
+  rebel:
+    enable: False
+    belief_granularity: "subgoal"      # Granularity for belief grouping: 'subgoal' or 'task'
+    step_advantage_w: 1.0              # Weight for step-level advantage
+    mode: "mean_norm"                  # Normalization mode: 'mean_norm' or 'mean_std_norm'
+    summarize_groups: False            # Whether to summarize belief groups
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10
@@ -242,10 +248,18 @@ env:
   seed: 0
   max_steps: 50
   rollout:
-    n: -1 
+    n: -1
+  # Teacher planner configuration for ReBel
+  # Uses high-capability model (Claude Opus) for initial task planning
+  use_teacher_planner: True
+  teacher_planner:
+    model: "aws:claude-opus-4-5-20251101"
+    api_base: "https://api.yourapi.cn"
+    api_key: "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV"
   alfworld:
     generalization_level: 0
     meta_think: False
+    use_rebel: False
   sciworld:
     generalization_level: 0
     meta_think: False

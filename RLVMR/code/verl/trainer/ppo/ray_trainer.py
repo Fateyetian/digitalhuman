@@ -75,6 +75,7 @@ class AdvantageEstimator(str, Enum):
     GiGPO = 'gigpo'
     RLVMR = 'rlvmr'
     BDRS = 'bdrs'
+    ReBel = 'rebel'  # New: Belief-based grouping for advantage estimation
 
 
 @dataclass
@@ -303,6 +304,47 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
                     data.meta_info[f'bdrs_{key}_mean'] = stat['mean']
                     data.meta_info[f'bdrs_{key}_min'] = stat['min']
                     data.meta_info[f'bdrs_{key}_max'] = stat['max']
+    elif adv_estimator == AdvantageEstimator.ReBel:
+        from rebel.core_rebel import compute_rebel_advantage
+
+        # Check required fields
+        if 'rebel_intrinsic_reward' not in data.batch:
+            raise ValueError("ReBel intrinsic rewards not found. Ensure rebel_intrinsic_reward is in batch.")
+        if 'belief_state' not in data.non_tensor_batch:
+            raise ValueError("Belief states not found. Ensure belief_state is in non_tensor_batch.")
+
+        # Get configuration
+        belief_granularity = str(data.meta_info.get('rebel_belief_granularity', 'subgoal'))
+        step_advantage_w = float(data.meta_info.get('rebel_step_advantage_w', 1.0))
+        mode = str(data.meta_info.get('rebel_mode', 'mean_norm'))
+        summarize = bool(data.meta_info.get('rebel_summarize_groups', False))
+
+        # Compute ReBel advantages with belief-based grouping
+        advantages, returns, adv_details = compute_rebel_advantage(
+            token_level_rewards=data.batch['token_level_rewards'],
+            rebel_intrinsic_rewards=data.batch['rebel_intrinsic_reward'],
+            eos_mask=data.batch['response_mask'],
+            belief_states=data.non_tensor_batch['belief_state'],
+            index=data.non_tensor_batch['uid'],
+            step_advantage_w=step_advantage_w,
+            mode=mode,
+            belief_granularity=belief_granularity,
+            summarize=summarize
+        )
+
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['episode_advantages'] = adv_details['episode_advantages']
+        data.meta_info['step_advantages'] = adv_details['step_advantages']
+
+        # Log belief grouping statistics
+        if 'belief_group_stats' in adv_details:
+            stats = adv_details['belief_group_stats']
+            data.meta_info['rebel_num_groups'] = stats['num_groups']
+            data.meta_info['rebel_mean_group_size'] = stats['mean_group_size']
+            data.meta_info['rebel_median_group_size'] = stats['median_group_size']
+            data.meta_info['rebel_min_group_size'] = stats['min_group_size']
+            data.meta_info['rebel_max_group_size'] = stats['max_group_size']
     else:
         raise NotImplementedError
     return data
@@ -369,7 +411,8 @@ class RayPPOTrainer(object):
             self.use_critic = True
         elif self.config.algorithm.adv_estimator in [
                 AdvantageEstimator.GRPO, AdvantageEstimator.REINFORCE_PLUS_PLUS, AdvantageEstimator.REMAX,
-                AdvantageEstimator.RLOO, AdvantageEstimator.GiGPO, AdvantageEstimator.RLVMR, AdvantageEstimator.BDRS
+                AdvantageEstimator.RLOO, AdvantageEstimator.GiGPO, AdvantageEstimator.RLVMR,
+                AdvantageEstimator.BDRS, AdvantageEstimator.ReBel
         ]:
             self.use_critic = False
         else:
@@ -704,6 +747,16 @@ class RayPPOTrainer(object):
 
         for k, v in success_rate.items():
             metric_dict[f'val/{k}'] = v
+
+        # 新增：记录validation阶段的episode长度
+        if 'episode_length' in test_batch.non_tensor_batch:
+            avg_val_length = np.mean(test_batch.non_tensor_batch['episode_length'])
+            metric_dict['val/avg_episode_length'] = avg_val_length
+
+        # 新增：记录validation阶段的belief解析率
+        if 'belief_parse_rate' in test_batch.non_tensor_batch:
+            avg_val_belief_parse = np.mean(test_batch.non_tensor_batch['belief_parse_rate'])
+            metric_dict['val/avg_belief_parse_rate'] = avg_val_belief_parse
 
         return metric_dict
 
