@@ -74,6 +74,108 @@ def canonicalize_belief(belief_state: Dict[str, Any], granularity: str = 'subgoa
                 'found_object_types': sorted(object_types)
             }
 
+        elif granularity == 'task_status':
+            # V4推荐: 基于结构化字段的稳健分组（100%覆盖，无脆弱性）
+            # 预期效果: Groups/Batch 从 40-50% 降到 ~10%, 单样本组 <30%
+            task_progress = belief_state.get('task_progress_update', {}) or {}
+            world_model = belief_state.get('world_model_update', {}) or {}
+
+            # 1. subgoal_status - 结构化字段
+            status = str(task_progress.get('subgoal_status', '')).lower()
+            is_complete = 'complete' in status
+
+            # 2. has_state_change - 物体状态是否已改变（heat/cool/clean关键）
+            state_changes = world_model.get('state_changes', {}) or {}
+            has_state_change = len(state_changes) > 0
+
+            # 3. has_inventory - 是否持有物体
+            inventory = world_model.get('inventory', []) or []
+            if isinstance(inventory, str):
+                inventory = [inventory] if inventory else []
+            has_inventory = len(inventory) > 0
+
+            canonical = {
+                'is_complete': is_complete,
+                'has_state_change': has_state_change,
+                'has_inventory': has_inventory
+            }
+
+        elif granularity == 'state_aware':
+            # V4备选: subgoal + 物体状态类型（用于状态改变任务细粒度分析）
+            task_progress = belief_state.get('task_progress_update', {}) or {}
+            world_model = belief_state.get('world_model_update', {}) or {}
+
+            state_changes = world_model.get('state_changes', {})
+            if not isinstance(state_changes, dict):
+                state_changes = {}
+
+            # 提取状态类型（不关注具体物体）
+            state_types = set()
+            for obj, state in state_changes.items():
+                state_lower = str(state).lower()
+                if any(x in state_lower for x in ['heated', 'hot', 'warm', 'cooked']):
+                    state_types.add('heated')
+                elif any(x in state_lower for x in ['cooled', 'cold', 'cool', 'chilled']):
+                    state_types.add('cooled')
+                elif any(x in state_lower for x in ['cleaned', 'clean', 'washed']):
+                    state_types.add('cleaned')
+
+            canonical = {
+                'subgoal': str(task_progress.get('updated_subgoal', '')).lower().strip(),
+                'status': str(task_progress.get('subgoal_status', '')).lower().strip(),
+                'state_types': sorted(state_types)
+            }
+
+        elif granularity == 'adaptive':
+            # V5推荐: 自适应粒度 - 在task_status和state_aware之间取得平衡
+            # 目标: 100-300组, 5-20样本/组, <50%单样本组
+            task_progress = belief_state.get('task_progress_update', {}) or {}
+            world_model = belief_state.get('world_model_update', {}) or {}
+
+            # 1. 结构化状态 (来自task_status，确保100%覆盖)
+            status = str(task_progress.get('subgoal_status', '')).lower()
+            is_complete = 'complete' in status
+
+            state_changes = world_model.get('state_changes', {}) or {}
+            has_state_change = len(state_changes) > 0
+
+            inventory = world_model.get('inventory', []) or []
+            if isinstance(inventory, str):
+                inventory = [inventory] if inventory else []
+            has_inventory = len(inventory) > 0
+
+            # 2. 子目标阶段指数 (简化的subgoal表示)
+            # 将subgoal映射到有限的阶段类型，避免过多唯一组合
+            subgoal = str(task_progress.get('updated_subgoal', '')).lower().strip()
+
+            # 定义阶段类型映射
+            stage_type = 'other'
+            if any(x in subgoal for x in ['find', 'look', 'search', 'locate']):
+                stage_type = 'find'
+            elif any(x in subgoal for x in ['go to', 'goto', 'navigate', 'move']):
+                stage_type = 'navigate'
+            elif any(x in subgoal for x in ['pick', 'take', 'grab', 'get']):
+                stage_type = 'pickup'
+            elif any(x in subgoal for x in ['put', 'place', 'drop']):
+                stage_type = 'place'
+            elif any(x in subgoal for x in ['heat', 'cook', 'warm', 'microwave']):
+                stage_type = 'heat'
+            elif any(x in subgoal for x in ['cool', 'chill', 'fridge', 'refrigerat']):
+                stage_type = 'cool'
+            elif any(x in subgoal for x in ['clean', 'wash', 'rinse', 'sink']):
+                stage_type = 'clean'
+            elif any(x in subgoal for x in ['turn on', 'use', 'toggle', 'lamp', 'light']):
+                stage_type = 'use'
+            elif any(x in subgoal for x in ['open', 'close']):
+                stage_type = 'interact'
+
+            canonical = {
+                'is_complete': is_complete,
+                'has_state_change': has_state_change,
+                'has_inventory': has_inventory,
+                'stage_type': stage_type  # 有限的阶段类型，增加区分度但不过细
+            }
+
         elif granularity == 'fine':
             # 细粒度: 完整state
             canonical = belief_state
@@ -103,67 +205,119 @@ def build_belief_group(
     belief_states: np.ndarray,
     index: np.ndarray,
     granularity: str = 'subgoal',
-    summarize: bool = False
+    summarize: bool = False,
+    task_types: Optional[np.ndarray] = None,
+    task_aware: bool = False
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     按belief相似性将steps分组
 
-    分组策略: G = {j : belief_hash_j = belief_hash_i, uid_j = uid_i}
+    分组策略:
+    - 默认: G = {j : belief_hash_j = belief_hash_i, uid_j = uid_i}
+    - 任务感知(V2): G = {j : belief_hash_j = belief_hash_i, uid_j = uid_i, task_j = task_i}
 
     Args:
         belief_states: shape (batch_size,), 每个元素是belief字典
         index: shape (batch_size,), 每个step的prompt uid
         granularity: canonicalization粒度
         summarize: 是否打印分组统计
+        task_types: shape (batch_size,), 每个step的任务类型 (V2新增)
+        task_aware: 是否启用任务感知分组 (V2新增)
 
     Returns:
         belief_group_uids: shape (batch_size,), 每个step的group uid
-        group_stats: 分组统计信息
+        group_stats: 分组统计信息 (包含用于logging的metrics)
     """
     belief_group_uids = np.empty(len(belief_states), dtype=object)
     unique_indices = np.unique(index)
     group_sizes = []
     all_group_uids = set()
+    task_group_counts = defaultdict(int)  # 每个任务类型的组数
 
     for uid in unique_indices:
         # 1. 获取该uid的所有steps
         step_indices = np.where(index == uid)[0]
         beliefs = belief_states[step_indices]
 
-        # 2. 按belief hash聚类
+        # 获取任务类型 (如果启用任务感知)
+        if task_aware and task_types is not None:
+            tasks = task_types[step_indices]
+        else:
+            tasks = None
+
+        # 2. 按belief hash聚类 (可选: 加入任务类型)
         clusters = defaultdict(list)
         for i, belief in enumerate(beliefs):
             belief_hash = canonicalize_belief(belief, granularity)
-            clusters[belief_hash].append(step_indices[i])
 
-        # 3. 分配group uid (格式: belief_{uid}_{hash})
-        for belief_hash, original_indices in clusters.items():
-            group_uid = f"belief_{uid}_{belief_hash}"
+            if task_aware and tasks is not None:
+                # V2改进: 任务感知分组 - 只在相同任务类型内分组
+                task = str(tasks[i]) if tasks is not None else "unknown"
+                cluster_key = (task, belief_hash)
+            else:
+                # 原始方式: 只按belief分组
+                cluster_key = ("all", belief_hash)
+
+            clusters[cluster_key].append(step_indices[i])
+
+        # 3. 分配group uid
+        for cluster_key, original_indices in clusters.items():
+            task, belief_hash = cluster_key
+            if task_aware:
+                group_uid = f"belief_{task}_{uid}_{belief_hash}"
+            else:
+                group_uid = f"belief_{uid}_{belief_hash}"
+
             all_group_uids.add(group_uid)
             group_sizes.append(len(original_indices))
+            task_group_counts[task] += 1
 
             for idx in original_indices:
                 belief_group_uids[idx] = group_uid
 
-    # 计算统计
+    # 计算统计 (用于logging)
     group_stats = {
         'num_groups': len(all_group_uids),
         'group_sizes': group_sizes,
-        'mean_group_size': np.mean(group_sizes) if group_sizes else 0,
-        'median_group_size': np.median(group_sizes) if group_sizes else 0,
-        'min_group_size': np.min(group_sizes) if group_sizes else 0,
-        'max_group_size': np.max(group_sizes) if group_sizes else 0,
+        'mean_group_size': float(np.mean(group_sizes)) if group_sizes else 0.0,
+        'median_group_size': float(np.median(group_sizes)) if group_sizes else 0.0,
+        'min_group_size': int(np.min(group_sizes)) if group_sizes else 0,
+        'max_group_size': int(np.max(group_sizes)) if group_sizes else 0,
+        'std_group_size': float(np.std(group_sizes)) if group_sizes else 0.0,
         'single_sample_groups': sum(1 for s in group_sizes if s == 1),
+        'single_sample_ratio': sum(1 for s in group_sizes if s == 1) / max(len(group_sizes), 1),
+        'task_aware': task_aware,
     }
 
+    # 如果启用任务感知，添加每个任务的组数统计
+    if task_aware and task_group_counts:
+        group_stats['task_group_counts'] = dict(task_group_counts)
+        # 计算每个任务类型的平均组大小
+        for task in task_group_counts:
+            if task != "all":
+                group_stats[f'num_groups_{task}'] = task_group_counts[task]
+
     if summarize:
+        task_info = ""
+        if task_aware and len(task_group_counts) > 1:
+            task_info = "\n├─ Task-Aware: Enabled"
+            for task, count in sorted(task_group_counts.items()):
+                if task != "all":
+                    task_info += f"\n│  └─ {task}: {count} groups"
+
         print(f"""
-ReBel Belief-Based Grouping:
-├─ Num Groups: {group_stats['num_groups']}
-├─ Mean Group Size: {group_stats['mean_group_size']:.2f}
-├─ Median Group Size: {group_stats['median_group_size']:.1f}
-├─ Min/Max Group Size: {group_stats['min_group_size']}/{group_stats['max_group_size']}
-└─ Single-Sample Groups: {group_stats['single_sample_groups']}
+============================================================
+ReBel Belief-Based Grouping Statistics
+============================================================
+Total steps: {len(belief_states)}
+Number of groups: {group_stats['num_groups']}
+Mean group size: {group_stats['mean_group_size']:.2f}
+Median group size: {group_stats['median_group_size']:.1f}
+Min group size: {group_stats['min_group_size']}
+Max group size: {group_stats['max_group_size']}
+Std group size: {group_stats['std_group_size']:.2f}
+Single-sample groups: {group_stats['single_sample_groups']} ({group_stats['single_sample_ratio']:.1%}){task_info}
+============================================================
 """)
 
     return belief_group_uids, group_stats
@@ -311,7 +465,13 @@ def compute_rebel_advantage(
     step_advantage_w: float = 1.0,
     mode: str = "mean_norm",
     belief_granularity: str = 'subgoal',
-    summarize: bool = False
+    summarize: bool = False,
+    task_types: Optional[np.ndarray] = None,
+    task_aware: bool = False,
+    per_task_normalization: bool = False,
+    conditional_norm: bool = True,
+    min_samples_for_norm: int = 10,
+    min_std_for_norm: float = 0.1
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
     """
     ReBel优势计算主函数
@@ -320,7 +480,7 @@ def compute_rebel_advantage(
 
     其中:
     - A_episode: 按uid分组归一化
-    - A_step: 按(uid, belief_hash)分组归一化
+    - A_step: 按(uid, belief_hash)分组归一化，可选任务感知
     - λ: step_advantage_w
 
     Args:
@@ -332,13 +492,19 @@ def compute_rebel_advantage(
         epsilon: 数值稳定性
         step_advantage_w: λ权重
         mode: 'mean_norm' or 'mean_std_norm'
-        belief_granularity: 'subgoal', 'medium', 'fine'
+        belief_granularity: 'subgoal', 'medium', 'fine', 'adaptive' (V5推荐)
         summarize: 是否打印统计
+        task_types: (batch,) 任务类型 (V2新增)
+        task_aware: 是否启用任务感知分组 (V2新增)
+        per_task_normalization: 是否按任务归一化优势 (V2新增)
+        conditional_norm: 是否启用条件归一化 (V5新增，保护小样本任务)
+        min_samples_for_norm: 条件归一化的最小样本数阈值 (V5新增)
+        min_std_for_norm: 条件归一化的最小标准差阈值 (V5新增)
 
     Returns:
         advantages: (batch, seq_len) 总优势
         returns: (batch, seq_len) 同上
-        adv_details: 详细信息
+        adv_details: 详细信息 (包含group_stats用于logging)
     """
     remove_std = (mode == "mean_norm")
 
@@ -347,9 +513,10 @@ def compute_rebel_advantage(
         token_level_rewards, eos_mask, index, epsilon, remove_std
     )
 
-    # 2. 构建belief groups (ReBel核心)
+    # 2. 构建belief groups (ReBel核心，V2支持任务感知)
     belief_group_uids, group_stats = build_belief_group(
-        belief_states, index, belief_granularity, summarize
+        belief_states, index, belief_granularity, summarize,
+        task_types=task_types, task_aware=task_aware
     )
 
     # 3. Step优势 (按belief group归一化)
@@ -360,18 +527,48 @@ def compute_rebel_advantage(
     # 4. 组合
     total_advantages = episode_advantages + step_advantage_w * step_advantages
 
-    # 5. 统计信息
+    # 5. V2新增: 按任务归一化 (可选), V5改进: 条件归一化
+    if per_task_normalization and task_types is not None:
+        total_advantages = normalize_advantages_per_task(
+            total_advantages, task_types, eos_mask, epsilon,
+            min_samples_for_norm=min_samples_for_norm,
+            min_std_for_norm=min_std_for_norm,
+            use_conditional_norm=conditional_norm
+        )
+
+    # 6. 统计信息 (用于SwanLab/WandB logging)
     adv_details = {
+        # 优势统计
         'episode_advantages': episode_advantages,
         'step_advantages': step_advantages,
+        'episode_adv_mean': float(episode_advantages.mean().item()),
+        'episode_adv_std': float(episode_advantages.std().item()),
+        'step_adv_mean': float(step_advantages.mean().item()),
+        'step_adv_std': float(step_advantages.std().item()),
+        'total_adv_mean': float(total_advantages.mean().item()),
+        'total_adv_std': float(total_advantages.std().item()),
+        # 分组统计 (关键metrics)
         'belief_group_stats': group_stats,
-        'episode_adv_mean': episode_advantages.mean().item(),
-        'episode_adv_std': episode_advantages.std().item(),
-        'step_adv_mean': step_advantages.mean().item(),
-        'step_adv_std': step_advantages.std().item(),
-        'total_adv_mean': total_advantages.mean().item(),
-        'total_adv_std': total_advantages.std().item(),
+        'rebel/num_groups': group_stats['num_groups'],
+        'rebel/mean_group_size': group_stats['mean_group_size'],
+        'rebel/median_group_size': group_stats['median_group_size'],
+        'rebel/min_group_size': group_stats['min_group_size'],
+        'rebel/max_group_size': group_stats['max_group_size'],
+        'rebel/std_group_size': group_stats['std_group_size'],
+        'rebel/single_sample_ratio': group_stats['single_sample_ratio'],
+        # V2/V5配置
+        'rebel/task_aware': int(task_aware),
+        'rebel/per_task_norm': int(per_task_normalization),
+        'rebel/conditional_norm': int(conditional_norm),
+        'rebel/min_samples_for_norm': min_samples_for_norm,
+        'rebel/min_std_for_norm': min_std_for_norm,
     }
+
+    # 添加每个任务类型的组数 (如果启用任务感知)
+    if task_aware and 'task_group_counts' in group_stats:
+        for task, count in group_stats['task_group_counts'].items():
+            if task != "all":
+                adv_details[f'rebel/num_groups_{task}'] = count
 
     if summarize:
         print(f"""
@@ -381,10 +578,107 @@ ReBel Advantage Statistics:
 ├─ Step Adv Mean: {adv_details['step_adv_mean']:.4f}
 ├─ Step Adv Std: {adv_details['step_adv_std']:.4f}
 ├─ Total Adv Mean: {adv_details['total_adv_mean']:.4f}
-└─ Total Adv Std: {adv_details['total_adv_std']:.4f}
+├─ Total Adv Std: {adv_details['total_adv_std']:.4f}
+├─ Task-Aware: {task_aware}
+└─ Per-Task Norm: {per_task_normalization}
 """)
 
     return total_advantages, total_advantages, adv_details
+
+
+def normalize_advantages_per_task(
+    advantages: torch.Tensor,
+    task_types: np.ndarray,
+    eos_mask: torch.Tensor,
+    epsilon: float = 1e-8,
+    min_samples_for_norm: int = 10,
+    min_std_for_norm: float = 0.1,
+    use_conditional_norm: bool = True
+) -> torch.Tensor:
+    """
+    V5改进: 条件归一化 - 保护小样本任务
+
+    策略:
+    1. 样本数 >= min_samples_for_norm 且 std >= min_std_for_norm: 标准归一化 (mean=0, std=1)
+    2. 样本数 >= min_samples_for_norm 但 std < min_std_for_norm: 保守归一化 (仅去均值)
+    3. 样本数 < min_samples_for_norm: 使用全局统计量归一化
+
+    这避免了对look_at_obj_in_light等小样本任务的噪声放大问题
+
+    Args:
+        advantages: (batch, seq_len) 原始优势
+        task_types: (batch,) 任务类型
+        eos_mask: (batch, seq_len) 有效token掩码
+        epsilon: 数值稳定性
+        min_samples_for_norm: 最小样本数阈值 (V5新增)
+        min_std_for_norm: 最小标准差阈值 (V5新增)
+        use_conditional_norm: 是否启用条件归一化 (V5新增)
+
+    Returns:
+        normalized: (batch, seq_len) 归一化后的优势
+    """
+    result = advantages.clone()
+    unique_tasks = np.unique(task_types)
+
+    # 计算全局统计量 (用于小样本任务的后备归一化)
+    all_valid_mask = eos_mask > 0
+    if all_valid_mask.sum() > 0:
+        global_mean = advantages[all_valid_mask].mean()
+        global_std = advantages[all_valid_mask].std()
+    else:
+        global_mean = torch.tensor(0.0)
+        global_std = torch.tensor(1.0)
+
+    with torch.no_grad():
+        for task in unique_tasks:
+            # 找到属于该任务的样本
+            mask = np.array([t == task for t in task_types])
+            sample_count = mask.sum()
+
+            if sample_count <= 1:
+                continue
+
+            # 获取该任务的优势
+            task_adv = advantages[mask]
+            task_eos = eos_mask[mask]
+
+            # 只对有效token计算统计量
+            valid_mask = task_eos > 0
+            if valid_mask.sum() == 0:
+                continue
+
+            valid_adv = task_adv[valid_mask]
+            mean = valid_adv.mean()
+            std = valid_adv.std()
+
+            # V5条件归一化逻辑
+            if use_conditional_norm:
+                if sample_count < min_samples_for_norm:
+                    # 方案A: 样本太少，使用全局统计量归一化
+                    # 这避免了小样本任务的噪声放大
+                    if global_std > epsilon:
+                        normalized_adv = (task_adv - global_mean) / (global_std + epsilon)
+                    else:
+                        normalized_adv = task_adv - global_mean
+                    result[mask] = normalized_adv * task_eos
+
+                elif std < min_std_for_norm:
+                    # 方案B: 原始方差太小，使用保守归一化（仅去均值）
+                    # 这保留了任务内部的自然方差信息
+                    normalized_adv = task_adv - mean
+                    result[mask] = normalized_adv * task_eos
+
+                else:
+                    # 方案C: 正常情况，使用标准归一化
+                    normalized_adv = (task_adv - mean) / (std + epsilon)
+                    result[mask] = normalized_adv * task_eos
+            else:
+                # 原始逻辑（兼容V4）
+                if std > epsilon:
+                    normalized_adv = (task_adv - mean) / (std + epsilon)
+                    result[mask] = normalized_adv * task_eos
+
+    return result
 
 
 # ============================================================================ #
@@ -393,14 +687,16 @@ ReBel Advantage Statistics:
 
 def consistency_reward(
     belief: Dict[str, Any],
-    ground_truth: Optional[Dict[str, Any]] = None
+    ground_truth: Optional[Dict[str, Any]] = None,
+    task_type: Optional[str] = None
 ) -> float:
     """
-    评估belief与真实环境的一致性
+    评估belief与真实环境的一致性（V4增强：包含物体状态检查）
 
     Args:
         belief: 模型输出的belief
         ground_truth: 真实环境状态
+        task_type: 任务类型（用于状态改变任务的额外检查）
 
     Returns:
         reward: [-0.5, 1.0]
@@ -416,7 +712,20 @@ def consistency_reward(
         found_objects = world_model.get('found_objects', {})
         if isinstance(found_objects, dict) and found_objects:
             reward += 0.1 * min(len(found_objects), 5)  # Max 0.5
-        return np.clip(reward, 0, 0.5)
+
+        # V4新增: 对状态改变任务，检查是否记录了状态变化
+        state_changes = world_model.get('state_changes', {}) or {}
+        if task_type and 'heat' in str(task_type).lower():
+            if any('heated' in str(v).lower() for v in state_changes.values()):
+                reward += 0.2  # 正确记录了加热状态
+        elif task_type and 'cool' in str(task_type).lower():
+            if any('cooled' in str(v).lower() for v in state_changes.values()):
+                reward += 0.2
+        elif task_type and 'clean' in str(task_type).lower():
+            if any('cleaned' in str(v).lower() for v in state_changes.values()):
+                reward += 0.2
+
+        return np.clip(reward, 0, 0.7)
 
     # 有ground truth: 验证正确性
     gt_objects = ground_truth.get('object_locations', {}) or {}
@@ -426,7 +735,6 @@ def consistency_reward(
         for obj_id, believed_loc in found_objects.items():
             if not obj_id or not believed_loc:
                 continue
-            # 检查是否真的在那里
             obj_lower = str(obj_id).lower()
             believed_lower = str(believed_loc).lower()
 
@@ -438,19 +746,37 @@ def consistency_reward(
                         reward -= 0.1  # 错误belief
                     break
 
+    # V4新增: 验证物体状态一致性
+    gt_states = ground_truth.get('object_states', {}) or {}
+    state_changes = world_model.get('state_changes', {}) or {}
+    if isinstance(state_changes, dict) and gt_states:
+        for obj, believed_state in state_changes.items():
+            obj_lower = str(obj).lower()
+            believed_state_lower = str(believed_state).lower()
+            for gt_obj, gt_state in gt_states.items():
+                if obj_lower in gt_obj.lower() or gt_obj.lower() in obj_lower:
+                    gt_state_lower = str(gt_state).lower()
+                    if believed_state_lower in gt_state_lower or gt_state_lower in believed_state_lower:
+                        reward += 0.15  # 状态一致
+                    else:
+                        reward -= 0.1  # 状态不一致
+                    break
+
     return np.clip(reward, -0.5, 1.0)
 
 
 def progress_reward(
     belief: Dict[str, Any],
-    prev_belief: Optional[Dict[str, Any]] = None
+    prev_belief: Optional[Dict[str, Any]] = None,
+    task_type: Optional[str] = None
 ) -> float:
     """
-    评估任务进度
+    评估任务进度（V4增强：包含状态改变检测）
 
     Args:
         belief: 当前belief
         prev_belief: 上一步belief
+        task_type: 任务类型
 
     Returns:
         reward: [0, 1.0]
@@ -461,13 +787,15 @@ def progress_reward(
     reward = 0.0
     task_progress = belief.get('task_progress_update', {}) or {}
     prev_task_progress = (prev_belief.get('task_progress_update', {}) or {}) if prev_belief else {}
+    world_model = belief.get('world_model_update', {}) or {}
+    prev_world_model = (prev_belief.get('world_model_update', {}) or {}) if prev_belief else {}
 
     # 1. 子目标完成
     curr_status = str(task_progress.get('subgoal_status', '')).lower()
     prev_status = str(prev_task_progress.get('subgoal_status', '')).lower()
 
     if 'complete' in curr_status and 'complete' not in prev_status:
-        reward += 0.5  # 新完成子目标
+        reward += 0.4  # 新完成子目标
 
     # 2. 有意义的证据
     evidence = str(task_progress.get('evidence', ''))
@@ -480,6 +808,38 @@ def progress_reward(
 
     if curr_subgoal and curr_subgoal != prev_subgoal:
         reward += 0.1  # 子目标推进
+
+    # V4新增: 状态改变检测（对heat/cool/clean任务关键）
+    curr_state_changes = world_model.get('state_changes', {}) or {}
+    prev_state_changes = prev_world_model.get('state_changes', {}) or {}
+
+    if isinstance(curr_state_changes, dict) and isinstance(prev_state_changes, dict):
+        # 检测新的状态改变
+        new_states = set()
+        for obj, state in curr_state_changes.items():
+            state_lower = str(state).lower()
+            prev_state = str(prev_state_changes.get(obj, '')).lower()
+            if state_lower != prev_state:
+                # 检测具体的状态类型
+                if any(x in state_lower for x in ['heated', 'hot', 'cooked']):
+                    new_states.add('heated')
+                elif any(x in state_lower for x in ['cooled', 'cold', 'chilled']):
+                    new_states.add('cooled')
+                elif any(x in state_lower for x in ['cleaned', 'clean', 'washed']):
+                    new_states.add('cleaned')
+
+        # 根据任务类型给予奖励
+        if task_type:
+            task_lower = str(task_type).lower()
+            if 'heat' in task_lower and 'heated' in new_states:
+                reward += 0.3  # 完成了加热
+            elif 'cool' in task_lower and 'cooled' in new_states:
+                reward += 0.3  # 完成了冷却
+            elif 'clean' in task_lower and 'cleaned' in new_states:
+                reward += 0.3  # 完成了清洁
+        elif new_states:
+            # 无task_type时，任何新状态变化给予小奖励
+            reward += 0.1 * len(new_states)
 
     return np.clip(reward, 0, 1.0)
 
@@ -597,10 +957,11 @@ def compute_intrinsic_reward(
     output: str = "",
     is_format_valid: bool = True,
     is_action_available: bool = True,
-    weights: Optional[Dict[str, float]] = None
+    weights: Optional[Dict[str, float]] = None,
+    task_type: Optional[str] = None
 ) -> Tuple[float, Dict[str, float]]:
     """
-    计算ReBel内在奖励
+    计算ReBel内在奖励（V4增强：支持task_type）
 
     公式: R_intrinsic = α*R_consistency + β*R_progress + γ*R_exploration
 
@@ -614,6 +975,7 @@ def compute_intrinsic_reward(
         is_format_valid: 格式是否有效
         is_action_available: action是否可用
         weights: 权重配置
+        task_type: 任务类型（V4新增，用于状态改变任务的奖励增强）
 
     Returns:
         total_reward: 总内在奖励
@@ -641,9 +1003,9 @@ def compute_intrinsic_reward(
         component_rewards['intrinsic'] = 0.0
         return r_format, component_rewards  # 返回格式惩罚
 
-    # 计算各组件
-    r_consistency = consistency_reward(belief, ground_truth)
-    r_progress = progress_reward(belief, prev_belief)
+    # 计算各组件（V4: 传递task_type）
+    r_consistency = consistency_reward(belief, ground_truth, task_type)
+    r_progress = progress_reward(belief, prev_belief, task_type)
     r_exploration = exploration_reward(belief, prev_belief)
 
     component_rewards['consistency'] = r_consistency

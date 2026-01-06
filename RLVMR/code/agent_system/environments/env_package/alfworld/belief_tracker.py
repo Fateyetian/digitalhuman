@@ -439,11 +439,15 @@ class RebelRewardCalculator:
         ground_truth: Dict[str, Any],
         step: int,
         done: bool,
-        success: bool
+        success: bool,
+        task_type: str = None,
+        world_model: Dict[str, Any] = None,
+        prev_world_model: Dict[str, Any] = None
     ) -> float:
         """
         Calculate task progress reward (r_progress)
         Measures accuracy of task understanding and progress tracking
+        V4增强: 支持task_type和状态改变检测
 
         Args:
             belief_progress: task_progress_update from model
@@ -456,6 +460,9 @@ class RebelRewardCalculator:
             step: Current step number
             done: Whether episode is done
             success: Whether task succeeded
+            task_type: 任务类型 (V4新增)
+            world_model: 当前world_model_update (V4新增)
+            prev_world_model: 上一步world_model_update (V4新增)
 
         Returns:
             Progress reward in [0, 1] range
@@ -544,12 +551,41 @@ class RebelRewardCalculator:
                     if overlap > 0:
                         subgoal_score = min(1.0, 0.7 + overlap * 0.1)
 
-        # Weighted combination: 40%, 30%, 30%
-        score = (
-            0.4 * subgoal_status_score +
-            0.3 * evidence_score +
-            0.3 * subgoal_score
-        )
+        # V4新增: Component 4 - 状态改变检测 (对heat/cool/clean任务关键)
+        state_change_bonus = 0.0
+        if task_type and world_model:
+            curr_state_changes = world_model.get('state_changes', {}) or {}
+            prev_state_changes = (prev_world_model or {}).get('state_changes', {}) or {}
+
+            if isinstance(curr_state_changes, dict):
+                task_lower = str(task_type).lower()
+                for obj, state in curr_state_changes.items():
+                    state_lower = str(state).lower()
+                    prev_state = str(prev_state_changes.get(obj, '')).lower() if prev_state_changes else ''
+
+                    # 检测是否有新的状态改变
+                    if state_lower != prev_state:
+                        if 'heat' in task_lower and any(x in state_lower for x in ['heated', 'hot', 'cooked']):
+                            state_change_bonus = 0.3  # 完成了加热
+                        elif 'cool' in task_lower and any(x in state_lower for x in ['cooled', 'cold', 'chilled']):
+                            state_change_bonus = 0.3  # 完成了冷却
+                        elif 'clean' in task_lower and any(x in state_lower for x in ['cleaned', 'clean', 'washed']):
+                            state_change_bonus = 0.3  # 完成了清洁
+
+        # Weighted combination: 35%, 25%, 25%, 15% (调整权重以容纳新组件)
+        if state_change_bonus > 0:
+            score = (
+                0.35 * subgoal_status_score +
+                0.25 * evidence_score +
+                0.25 * subgoal_score +
+                0.15 * (state_change_bonus / 0.3)  # 归一化到 [0,1]
+            )
+        else:
+            score = (
+                0.4 * subgoal_status_score +
+                0.3 * evidence_score +
+                0.3 * subgoal_score
+            )
 
         return score * self.progress_scale
 

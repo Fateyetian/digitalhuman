@@ -26,6 +26,35 @@ def set_gamefile(infos, gamefile):
     return infos
 
 
+# ALFWorld task types for V2 task-aware grouping
+ALFWORLD_TASK_TYPES = [
+    "pick_and_place",
+    "pick_two_obj_and_place",
+    "look_at_obj_in_light",
+    "pick_heat_then_place_in_recep",
+    "pick_cool_then_place_in_recep",
+    "pick_clean_then_place_in_recep",
+]
+
+
+def extract_task_type_from_gamefile(gamefile: str) -> str:
+    """Extract task type from gamefile path for ReBel V2 task-aware grouping.
+
+    Args:
+        gamefile: Path like '/path/to/pick_and_place_simple-Potato-None-...'
+
+    Returns:
+        task_type: One of ALFWORLD_TASK_TYPES or 'unknown'
+    """
+    if not gamefile:
+        return "unknown"
+
+    for task in ALFWORLD_TASK_TYPES:
+        if task in gamefile:
+            return task
+    return "unknown"
+
+
 class AlfWorldEnvironmentManager(EnvironmentManagerBase):
     def __init__(self, envs, projection_f, env_name, config=None):
         self.buffers = None
@@ -38,6 +67,11 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
             hasattr(config.algorithm, 'rebel') and
             getattr(config.algorithm.rebel, 'enable', False)
         )
+
+        # V3: Get prompt template type
+        self.prompt_template_type = "default"
+        if config is not None and hasattr(config, 'env') and hasattr(config.env, 'alfworld'):
+            self.prompt_template_type = getattr(config.env.alfworld, 'prompt_template_type', 'default')
 
         # Initialize ReBel components if enabled
         if self.use_rebel:
@@ -144,6 +178,10 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
             info['is_action_valid'] = to_numpy(valids[i])
             info['action_available'] = to_numpy(action_available[i])
 
+            # V2: Extract task_type for task-aware grouping
+            gamefile = info.get('extra.gamefile', '')
+            info['task_type'] = extract_task_type_from_gamefile(gamefile)
+
             # Calculate ReBel intrinsic rewards if enabled
             if self.use_rebel and i in self.ground_truth_trackers:
                 # Update ground truth tracker
@@ -244,13 +282,18 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         """
         postprocess_text_obs = []
 
-        # Select template based on ReBel mode
+        # Select template based on ReBel mode and V3 prompt template type
         if self.use_rebel:
-            from agent_system.environments.env_package.alfworld import (
-                ALFWORLD_TEMPLATE_REBEL, ALFWORLD_TEMPLATE_NO_HIS_REBEL
+            from agent_system.environments.env_package.alfworld.alfworld_rebel_prompt import (
+                get_prompt_template, PROMPT_TEMPLATES
             )
-            _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS_REBEL
-            _ALFWORLD_TEMPLATE = ALFWORLD_TEMPLATE_REBEL
+            # V3: Use configurable template type
+            template_type = self.prompt_template_type
+            if template_type not in PROMPT_TEMPLATES:
+                template_type = "default"
+
+            _ALFWORLD_TEMPLATE_NO_HIS = get_prompt_template(template_type, has_history=False)
+            _ALFWORLD_TEMPLATE = get_prompt_template(template_type, has_history=True)
         else:
             # Default basic template
             _ALFWORLD_TEMPLATE_NO_HIS = ALFWORLD_TEMPLATE_NO_HIS
@@ -263,14 +306,29 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
             # Get task description
             task_description = self.tasks[i] if i < len(self.tasks) else "Unknown task"
 
+            # V3: Get task_type for explicit_task_type template
+            task_type = "unknown"
+            if i < len(self.gamefile) and self.gamefile[i]:
+                task_type = extract_task_type_from_gamefile(self.gamefile[i])
+
+            # V3: Get current_subgoal for belief_conditioned template
+            current_subgoal = "Analyze the task and determine first action"
+            if i in self.cumulative_beliefs:
+                task_progress = self.cumulative_beliefs[i].get('task_progress', {})
+                if isinstance(task_progress, dict):
+                    current_subgoal = task_progress.get('subgoal', current_subgoal) or current_subgoal
+
             if init or history_length <= 0:
                 # Initial observation - no history
                 if self.use_rebel:
-                    obs = _ALFWORLD_TEMPLATE_NO_HIS.format(
-                        task_description=task_description,
-                        observation=text_obs[i],
-                        admissible_actions=reformatted_admissible_actions
-                    )
+                    # V3: Pass additional fields based on template type
+                    format_kwargs = {
+                        'task_description': task_description,
+                        'observation': text_obs[i],
+                        'admissible_actions': reformatted_admissible_actions,
+                        'task_type': task_type,  # For explicit_task_type template
+                    }
+                    obs = _ALFWORLD_TEMPLATE_NO_HIS.format(**format_kwargs)
                 else:
                     obs = _ALFWORLD_TEMPLATE_NO_HIS.format(
                         observation=text_obs[i],
@@ -292,17 +350,21 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                     current_step = len(self.buffers[i])
                     step_count = self.step_counts.get(i, 0)
 
-                    obs = _ALFWORLD_TEMPLATE.format(
-                        task_description=task_description,
-                        current_step=current_step,
-                        step_count=step_count,
-                        observation=text_obs[i],
-                        world_state=world_state,
-                        task_state=task_state,
-                        explore_map_state=explore_map_state,
-                        admissible_actions=reformatted_admissible_actions,
-                        history=action_history.strip()
-                    )
+                    # V3: Pass additional fields based on template type
+                    format_kwargs = {
+                        'task_description': task_description,
+                        'current_step': current_step,
+                        'step_count': step_count,
+                        'observation': text_obs[i],
+                        'world_state': world_state,
+                        'task_state': task_state,
+                        'explore_map_state': explore_map_state,
+                        'admissible_actions': reformatted_admissible_actions,
+                        'history': action_history.strip(),
+                        'task_type': task_type,  # For explicit_task_type template
+                        'current_subgoal': current_subgoal,  # For belief_conditioned template
+                    }
+                    obs = _ALFWORLD_TEMPLATE.format(**format_kwargs)
                 else:
                     obs = _ALFWORLD_TEMPLATE.format(
                         history=action_history.strip(),

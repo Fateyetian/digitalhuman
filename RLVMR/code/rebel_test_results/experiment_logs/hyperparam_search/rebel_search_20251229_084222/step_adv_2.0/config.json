@@ -1,0 +1,11 @@
+{
+  "experiment_name": "step_adv_2.0",
+  "step_advantage_w": 2.0,
+  "belief_granularity": "subgoal",
+  "learning_rate": "1e-6",
+  "mode": "mean_norm",
+  "epochs": 30,
+  "duration_seconds": 29561,
+  "success_rate": "",
+  "avg_steps": ""
+}

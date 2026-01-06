@@ -319,6 +319,22 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
         mode = str(data.meta_info.get('rebel_mode', 'mean_norm'))
         summarize = bool(data.meta_info.get('rebel_summarize_groups', False))
 
+        # V2: Get task-aware configuration
+        task_aware = bool(data.meta_info.get('rebel_task_aware_grouping', False))
+        per_task_norm = bool(data.meta_info.get('rebel_per_task_normalization', False))
+
+        # V5: Get conditional normalization configuration
+        conditional_norm = bool(data.meta_info.get('rebel_conditional_norm', True))
+        min_samples_for_norm = int(data.meta_info.get('rebel_min_samples_for_norm', 10))
+        min_std_for_norm = float(data.meta_info.get('rebel_min_std_for_norm', 0.1))
+
+        # V2: Get task_types from non_tensor_batch (added by env_manager)
+        task_types = data.non_tensor_batch.get('task_type', None)
+        if task_aware and task_types is None:
+            import warnings
+            warnings.warn("task_aware_grouping enabled but task_type not found in batch. Using default grouping.")
+            task_aware = False
+
         # Compute ReBel advantages with belief-based grouping
         advantages, returns, adv_details = compute_rebel_advantage(
             token_level_rewards=data.batch['token_level_rewards'],
@@ -329,7 +345,15 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
             step_advantage_w=step_advantage_w,
             mode=mode,
             belief_granularity=belief_granularity,
-            summarize=summarize
+            summarize=summarize,
+            # V2 parameters
+            task_types=task_types,
+            task_aware=task_aware,
+            per_task_normalization=per_task_norm,
+            # V5 parameters
+            conditional_norm=conditional_norm,
+            min_samples_for_norm=min_samples_for_norm,
+            min_std_for_norm=min_std_for_norm
         )
 
         data.batch['advantages'] = advantages
@@ -337,7 +361,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
         data.meta_info['episode_advantages'] = adv_details['episode_advantages']
         data.meta_info['step_advantages'] = adv_details['step_advantages']
 
-        # Log belief grouping statistics
+        # Log belief grouping statistics (for SwanLab/WandB)
         if 'belief_group_stats' in adv_details:
             stats = adv_details['belief_group_stats']
             data.meta_info['rebel_num_groups'] = stats['num_groups']
@@ -345,6 +369,51 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
             data.meta_info['rebel_median_group_size'] = stats['median_group_size']
             data.meta_info['rebel_min_group_size'] = stats['min_group_size']
             data.meta_info['rebel_max_group_size'] = stats['max_group_size']
+            # V2 additional metrics
+            data.meta_info['rebel_std_group_size'] = stats.get('std_group_size', 0.0)
+            data.meta_info['rebel_single_sample_ratio'] = stats.get('single_sample_ratio', 0.0)
+
+        # V2: Log per-task group counts if task-aware is enabled
+        for key in adv_details:
+            if key.startswith('rebel/num_groups_'):
+                data.meta_info[key] = adv_details[key]
+
+        # V2: Log configuration flags
+        data.meta_info['rebel_task_aware'] = int(task_aware)
+        data.meta_info['rebel_per_task_norm'] = int(per_task_norm)
+
+        # V2: Compute per-task advantage statistics (for conflict analysis)
+        if task_types is not None:
+            import torch
+            response_mask = data.batch.get('response_mask', None)
+            if response_mask is None and 'attention_mask' in data.batch:
+                max_resp_len = data.batch['responses'].shape[-1]
+                response_mask = data.batch['attention_mask'][:, -max_resp_len:]
+
+            unique_tasks = set(task_types)
+            per_task_adv_means = {}
+            per_task_adv_stds = {}
+
+            for task in unique_tasks:
+                task_mask = torch.tensor([t == task for t in task_types], device=advantages.device)
+                task_mask_expanded = task_mask.unsqueeze(1).expand_as(advantages)
+                if response_mask is not None:
+                    combined_mask = task_mask_expanded & response_mask.bool()
+                else:
+                    combined_mask = task_mask_expanded
+
+                task_advs = advantages[combined_mask]
+                if len(task_advs) > 0:
+                    per_task_adv_means[task] = task_advs.mean().item()
+                    per_task_adv_stds[task] = task_advs.std().item() if len(task_advs) > 1 else 0.0
+
+            # Store per-task metrics
+            for task, mean_adv in per_task_adv_means.items():
+                task_short = task.replace('pick_', '').replace('_then_place_in_recep', '').replace('_obj', '')
+                data.meta_info[f'rebel/adv_mean_{task_short}'] = mean_adv
+            for task, std_adv in per_task_adv_stds.items():
+                task_short = task.replace('pick_', '').replace('_then_place_in_recep', '').replace('_obj', '')
+                data.meta_info[f'rebel/adv_std_{task_short}'] = std_adv
     else:
         raise NotImplementedError
     return data
@@ -1166,6 +1235,20 @@ class RayPPOTrainer(object):
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+
+                # Add ReBel metrics from meta_info
+                rebel_metric_keys = [
+                    'rebel_num_groups', 'rebel_mean_group_size', 'rebel_median_group_size',
+                    'rebel_min_group_size', 'rebel_max_group_size', 'rebel_std_group_size',
+                    'rebel_single_sample_ratio', 'rebel_task_aware', 'rebel_per_task_norm'
+                ]
+                for key in rebel_metric_keys:
+                    if key in batch.meta_info:
+                        metrics[f'rebel/{key.replace("rebel_", "")}'] = batch.meta_info[key]
+                # Add per-task group counts and advantage statistics
+                for key in batch.meta_info:
+                    if key.startswith('rebel/'):
+                        metrics[key] = batch.meta_info[key]
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)

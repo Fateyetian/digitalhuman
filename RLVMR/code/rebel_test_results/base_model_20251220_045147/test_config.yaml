@@ -1,0 +1,14 @@
+test_name: "ReBel Base Model Evaluation"
+timestamp: "20251220_045147"
+model: "Qwen2.5-1.5B-Instruct (Base)"
+model_path: "/root/testttt/RLVMR/code/base_models/Qwen2.5-1.5B-Instruct"
+purpose: "Evaluate ReBel on pre-trained model without fine-tuning"
+configuration:
+  train_data_size: 2
+  val_data_size: 4
+  group_size: 8
+  max_steps: 15
+  engine: vllm
+  belief_granularity: "subgoal"
+  step_advantage_w: 1.0
+  mode: "mean_norm"

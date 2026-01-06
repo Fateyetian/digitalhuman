@@ -1,0 +1,11 @@
+{
+  "experiment_name": "baseline",
+  "step_advantage_w": 1.0,
+  "belief_granularity": "subgoal",
+  "learning_rate": "1e-6",
+  "mode": "mean_norm",
+  "epochs": 30,
+  "duration_seconds": 30435,
+  "success_rate": "",
+  "avg_steps": ""
+}

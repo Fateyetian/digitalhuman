@@ -38,7 +38,7 @@ class TeacherPlanner:
 
     def __init__(
         self,
-        model: str = "aws:claude-opus-4-5-20251101",
+        model: str = "claude-opus-4-5-20251101",
         api_base: str = "https://api.yourapi.cn",
         api_key: Optional[str] = None,
         max_retries: int = 3,
@@ -50,7 +50,7 @@ class TeacherPlanner:
         Initialize the teacher planner.
 
         Args:
-            model: Model identifier (e.g., "aws:claude-opus-4-5-20251101")
+            model: Model identifier (e.g., "claude-opus-4-5-20251101")
             api_base: API base URL
             api_key: API key (can also be set via TEACHER_API_KEY env var)
             max_retries: Maximum retries for failed API calls
@@ -318,7 +318,7 @@ _teacher_planner: Optional[TeacherPlanner] = None
 
 
 def get_teacher_planner(
-    model: str = "aws:claude-opus-4-5-20251101",
+    model: str = "claude-opus-4-5-20251101",
     api_base: str = "https://api.yourapi.cn",
     api_key: Optional[str] = None,
     **kwargs
@@ -350,7 +350,7 @@ def get_teacher_planner(
 
 def generate_plans_with_teacher(
     planning_prompts: List[str],
-    model: str = "aws:claude-opus-4-5-20251101",
+    model: str = "claude-opus-4-5-20251101",
     api_base: str = "https://api.yourapi.cn",
     api_key: Optional[str] = None,
 ) -> List[Optional[dict]]:

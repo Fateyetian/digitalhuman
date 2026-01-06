@@ -1,0 +1,11 @@
+{
+  "experiment_name": "v2_combo_core",
+  "step_advantage_w": 0.5,
+  "belief_granularity": "subgoal",
+  "learning_rate": "1e-6",
+  "mode": "mean_norm",
+  "epochs": 100,
+  "duration_seconds": 76,
+  "success_rate": "FAILED",
+  "avg_steps": "N/A"
+}

@@ -383,12 +383,12 @@ class TrajectoryCollector:
                         # Use high-capability teacher model for planning
                         teacher_config = getattr(self.config.env, 'teacher_planner', None)
                         if teacher_config:
-                            teacher_model = getattr(teacher_config, 'model', "aws:claude-opus-4-5-20251101")
+                            teacher_model = getattr(teacher_config, 'model', "claude-opus-4-5-20251101")
                             teacher_api_base = getattr(teacher_config, 'api_base', "https://api.yourapi.cn")
                             teacher_api_key = getattr(teacher_config, 'api_key', "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV")
                         else:
                             # Default values
-                            teacher_model = "aws:claude-opus-4-5-20251101"
+                            teacher_model = "claude-opus-4-5-20251101"
                             teacher_api_base = "https://api.yourapi.cn"
                             teacher_api_key = "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV"
 
@@ -728,6 +728,10 @@ class TrajectoryCollector:
                     rebel_intrinsic = info.get('rebel_intrinsic_reward', 0.0)
                     step['rebel_intrinsic_reward'] = torch.tensor(rebel_intrinsic)
 
+                    # V2: Store task_type for task-aware grouping
+                    task_type = info.get('task_type', 'unknown')
+                    step['task_type'] = task_type
+
                     rebel_intrinsic_rewards.append(rebel_intrinsic)
 
             # Statistics for logging
@@ -758,6 +762,14 @@ class TrajectoryCollector:
             gen_batch_output.meta_info["rebel_step_advantage_w"] = float(getattr(self.config.algorithm.rebel, 'step_advantage_w', 1.0))
             gen_batch_output.meta_info["rebel_mode"] = str(getattr(self.config.algorithm.rebel, 'mode', 'mean_norm'))
             gen_batch_output.meta_info["rebel_belief_granularity"] = str(getattr(self.config.algorithm.rebel, 'belief_granularity', 'subgoal'))
+            gen_batch_output.meta_info["rebel_summarize_groups"] = bool(getattr(self.config.algorithm.rebel, 'summarize_groups', False))
+            # V2: Task-aware configuration
+            gen_batch_output.meta_info["rebel_task_aware_grouping"] = bool(getattr(self.config.algorithm.rebel, 'task_aware_grouping', False))
+            gen_batch_output.meta_info["rebel_per_task_normalization"] = bool(getattr(self.config.algorithm.rebel, 'per_task_normalization', False))
+            # V5: Conditional normalization configuration
+            gen_batch_output.meta_info["rebel_conditional_norm"] = bool(getattr(self.config.algorithm.rebel, 'conditional_norm', True))
+            gen_batch_output.meta_info["rebel_min_samples_for_norm"] = int(getattr(self.config.algorithm.rebel, 'min_samples_for_norm', 10))
+            gen_batch_output.meta_info["rebel_min_std_for_norm"] = float(getattr(self.config.algorithm.rebel, 'min_std_for_norm', 0.1))
             # 传递ReBel统计信息
             if 'meta_info_rebel' in locals():
                 gen_batch_output.meta_info['rebel_stats'] = meta_info_rebel

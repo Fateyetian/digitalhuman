@@ -1,0 +1,11 @@
+{
+  "experiment_name": "step_adv_0.5_val128_ep100",
+  "step_advantage_w": 0.5,
+  "belief_granularity": "subgoal",
+  "learning_rate": "1e-6",
+  "mode": "mean_norm",
+  "epochs": 100,
+  "duration_seconds": 76612,
+  "success_rate": "",
+  "avg_steps": ""
+}

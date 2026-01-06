@@ -154,9 +154,31 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 print(f'[rank-{self.rank}]: Saving model to {os.path.abspath(model_path)}')
                 print(f'[rank-{self.rank}]: Saving checkpoint to {os.path.abspath(model_path)}')
                 print(f'[rank-{self.rank}]: Saving extra_state to {os.path.abspath(extra_path)}')
-                torch.save(model_state_dict, model_path)
-                torch.save(optimizer_state_dict, optim_path)  # TODO: address optimizer is None
-                torch.save(extra_state_dict, extra_path)
+
+                # Robust save: first to local temp (/dev/shm), then copy to remote
+                import shutil
+                import tempfile
+
+                def save_to_remote(state_dict, remote_path):
+                    """Save via local temp to avoid network filesystem issues."""
+                    # Use /dev/shm for fast local temp storage
+                    temp_dir = "/dev/shm/ckpt_temp"
+                    os.makedirs(temp_dir, exist_ok=True)
+                    temp_path = os.path.join(temp_dir, f"temp_{self.rank}_{os.path.basename(remote_path)}")
+
+                    try:
+                        # Save to local temp first (fast and reliable)
+                        torch.save(state_dict, temp_path)
+                        # Copy to remote
+                        shutil.copy2(temp_path, remote_path)
+                    finally:
+                        # Clean up temp file
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+
+                save_to_remote(model_state_dict, model_path)
+                save_to_remote(optimizer_state_dict, optim_path)  # TODO: address optimizer is None
+                save_to_remote(extra_state_dict, extra_path)
 
         if "hf_model" in self.checkpoint_contents:
             # wait for everyone to dump to local

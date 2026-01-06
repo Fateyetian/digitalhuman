@@ -211,10 +211,17 @@ algorithm:
     penalty_revisit: -0.02             # 重复访问的惩罚
   rebel:
     enable: False
-    belief_granularity: "subgoal"      # Granularity for belief grouping: 'subgoal' or 'task'
+    belief_granularity: "subgoal"      # Granularity for belief grouping: 'subgoal', 'medium', 'fine', 'task_status', 'state_aware', 'adaptive'
     step_advantage_w: 1.0              # Weight for step-level advantage
     mode: "mean_norm"                  # Normalization mode: 'mean_norm' or 'mean_std_norm'
     summarize_groups: False            # Whether to summarize belief groups
+    # V2 Improvements - Task-aware training
+    task_aware_grouping: False         # Group beliefs only within same task type (prevents cross-task interference)
+    per_task_normalization: False      # Normalize advantages separately per task (balances learning across tasks)
+    # V5 Improvements - Conditional normalization (protects small-sample tasks like look_at_obj_in_light)
+    conditional_norm: True             # Enable conditional normalization to protect small-sample tasks
+    min_samples_for_norm: 10           # Minimum samples for per-task normalization (use global stats if below)
+    min_std_for_norm: 0.1              # Minimum std for normalization (use conservative norm if below)
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10
@@ -253,13 +260,18 @@ env:
   # Uses high-capability model (Claude Opus) for initial task planning
   use_teacher_planner: True
   teacher_planner:
-    model: "aws:claude-opus-4-5-20251101"
+    model: "claude-opus-4-5-20251101"
     api_base: "https://api.yourapi.cn"
     api_key: "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV"
   alfworld:
     generalization_level: 0
     meta_think: False
     use_rebel: False
+    # Prompt template type for V3 experiments:
+    # - "default": Standard ReBel prompts
+    # - "explicit_task_type": Add explicit task type label to prompt
+    # - "belief_conditioned": Emphasize current subgoal in action decision
+    prompt_template_type: "default"
   sciworld:
     generalization_level: 0
     meta_think: False
