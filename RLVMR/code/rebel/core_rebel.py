@@ -26,6 +26,64 @@ from typing import Dict, Any, List, Tuple, Optional
 # ===================== Belief Canonicalization ============================== #
 # ============================================================================ #
 
+def _get_stage_type_v6(subgoal: str) -> str:
+    """
+    V6改进: 正确优先级的阶段类型检测
+
+    关键修复: 'find' 必须优先于 'lamp'/'light' 等词
+    原因: "find lamp" 应该分类为 'find' 而非 'use'
+
+    优先级顺序:
+    1. complete - 完成状态
+    2. find - 搜索阶段 (必须优先于 lamp/light)
+    3. navigate - 导航阶段
+    4. pickup - 拾取阶段
+    5. place - 放置阶段
+    6. heat/cool/clean - 状态改变阶段
+    7. use - 使用阶段 (放在后面避免误匹配)
+    8. interact - 交互阶段
+    """
+    subgoal = subgoal.lower().strip()
+
+    # 优先级1: 完成状态
+    if any(x in subgoal for x in ['complete', 'done', 'finished', 'success']):
+        return 'complete'
+
+    # 优先级2: 搜索阶段 (必须优先于 'lamp'/'light' 等词！)
+    if any(x in subgoal for x in ['find', 'look for', 'search', 'locate']):
+        return 'find'
+
+    # 优先级3: 导航阶段
+    if any(x in subgoal for x in ['go to', 'goto', 'navigate', 'move to']):
+        return 'navigate'
+
+    # 优先级4: 拾取阶段
+    if any(x in subgoal for x in ['pick up', 'pick', 'take', 'grab']):
+        return 'pickup'
+
+    # 优先级5: 放置阶段
+    if any(x in subgoal for x in ['put', 'place', 'drop']):
+        return 'place'
+
+    # 优先级6: 状态改变阶段 (heat/cool/clean)
+    if any(x in subgoal for x in ['heat', 'cook', 'warm', 'microwave']):
+        return 'heat'
+    if any(x in subgoal for x in ['cool', 'chill', 'fridge', 'refrigerat']):
+        return 'cool'
+    if any(x in subgoal for x in ['clean', 'wash', 'rinse', 'sink']):
+        return 'clean'
+
+    # 优先级7: 使用阶段 (放在后面，避免 'lamp' 等词误匹配)
+    if any(x in subgoal for x in ['turn on', 'use', 'toggle', 'examine']):
+        return 'use'
+
+    # 优先级8: 交互阶段
+    if any(x in subgoal for x in ['open', 'close']):
+        return 'interact'
+
+    return 'other'
+
+
 def canonicalize_belief(belief_state: Dict[str, Any], granularity: str = 'subgoal') -> str:
     """
     将belief state转换为可哈希的规范表示
@@ -127,7 +185,7 @@ def canonicalize_belief(belief_state: Dict[str, Any], granularity: str = 'subgoa
             }
 
         elif granularity == 'adaptive':
-            # V5推荐: 自适应粒度 - 在task_status和state_aware之间取得平衡
+            # V6改进: 自适应粒度 - 修复 stage_type 优先级问题
             # 目标: 100-300组, 5-20样本/组, <50%单样本组
             task_progress = belief_state.get('task_progress_update', {}) or {}
             world_model = belief_state.get('world_model_update', {}) or {}
@@ -145,29 +203,11 @@ def canonicalize_belief(belief_state: Dict[str, Any], granularity: str = 'subgoa
             has_inventory = len(inventory) > 0
 
             # 2. 子目标阶段指数 (简化的subgoal表示)
-            # 将subgoal映射到有限的阶段类型，避免过多唯一组合
+            # V6关键修复: 优先级顺序很重要，'find' 必须优先于 'lamp'/'light'
             subgoal = str(task_progress.get('updated_subgoal', '')).lower().strip()
 
-            # 定义阶段类型映射
-            stage_type = 'other'
-            if any(x in subgoal for x in ['find', 'look', 'search', 'locate']):
-                stage_type = 'find'
-            elif any(x in subgoal for x in ['go to', 'goto', 'navigate', 'move']):
-                stage_type = 'navigate'
-            elif any(x in subgoal for x in ['pick', 'take', 'grab', 'get']):
-                stage_type = 'pickup'
-            elif any(x in subgoal for x in ['put', 'place', 'drop']):
-                stage_type = 'place'
-            elif any(x in subgoal for x in ['heat', 'cook', 'warm', 'microwave']):
-                stage_type = 'heat'
-            elif any(x in subgoal for x in ['cool', 'chill', 'fridge', 'refrigerat']):
-                stage_type = 'cool'
-            elif any(x in subgoal for x in ['clean', 'wash', 'rinse', 'sink']):
-                stage_type = 'clean'
-            elif any(x in subgoal for x in ['turn on', 'use', 'toggle', 'lamp', 'light']):
-                stage_type = 'use'
-            elif any(x in subgoal for x in ['open', 'close']):
-                stage_type = 'interact'
+            # V6: 使用函数获取stage_type，确保优先级正确
+            stage_type = _get_stage_type_v6(subgoal)
 
             canonical = {
                 'is_complete': is_complete,
@@ -471,7 +511,8 @@ def compute_rebel_advantage(
     per_task_normalization: bool = False,
     conditional_norm: bool = True,
     min_samples_for_norm: int = 10,
-    min_std_for_norm: float = 0.1
+    min_std_for_norm: float = 0.1,
+    min_samples_ratio: float = 0.0  # V6新增: 相对阈值
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
     """
     ReBel优势计算主函数
@@ -527,13 +568,14 @@ def compute_rebel_advantage(
     # 4. 组合
     total_advantages = episode_advantages + step_advantage_w * step_advantages
 
-    # 5. V2新增: 按任务归一化 (可选), V5改进: 条件归一化
+    # 5. V2新增: 按任务归一化 (可选), V5改进: 条件归一化, V6改进: 相对阈值
     if per_task_normalization and task_types is not None:
         total_advantages = normalize_advantages_per_task(
             total_advantages, task_types, eos_mask, epsilon,
             min_samples_for_norm=min_samples_for_norm,
             min_std_for_norm=min_std_for_norm,
-            use_conditional_norm=conditional_norm
+            use_conditional_norm=conditional_norm,
+            min_samples_ratio=min_samples_ratio  # V6新增
         )
 
     # 6. 统计信息 (用于SwanLab/WandB logging)
@@ -556,12 +598,13 @@ def compute_rebel_advantage(
         'rebel/max_group_size': group_stats['max_group_size'],
         'rebel/std_group_size': group_stats['std_group_size'],
         'rebel/single_sample_ratio': group_stats['single_sample_ratio'],
-        # V2/V5配置
+        # V2/V5/V6配置
         'rebel/task_aware': int(task_aware),
         'rebel/per_task_norm': int(per_task_normalization),
         'rebel/conditional_norm': int(conditional_norm),
         'rebel/min_samples_for_norm': min_samples_for_norm,
         'rebel/min_std_for_norm': min_std_for_norm,
+        'rebel/min_samples_ratio': min_samples_ratio,  # V6新增
     }
 
     # 添加每个任务类型的组数 (如果启用任务感知)
@@ -593,15 +636,20 @@ def normalize_advantages_per_task(
     epsilon: float = 1e-8,
     min_samples_for_norm: int = 10,
     min_std_for_norm: float = 0.1,
-    use_conditional_norm: bool = True
+    use_conditional_norm: bool = True,
+    min_samples_ratio: float = 0.0  # V6新增: 相对阈值 (0表示不使用)
 ) -> torch.Tensor:
     """
-    V5改进: 条件归一化 - 保护小样本任务
+    V6改进: 条件归一化 - 保护小样本任务
 
     策略:
     1. 样本数 >= min_samples_for_norm 且 std >= min_std_for_norm: 标准归一化 (mean=0, std=1)
     2. 样本数 >= min_samples_for_norm 但 std < min_std_for_norm: 保守归一化 (仅去均值)
     3. 样本数 < min_samples_for_norm: 使用全局统计量归一化
+
+    V6新增: 相对阈值支持
+    - 如果 min_samples_ratio > 0，使用相对阈值判断小样本任务
+    - 例如 min_samples_ratio=0.15 表示样本占比 < 15% 的任务使用保护归一化
 
     这避免了对look_at_obj_in_light等小样本任务的噪声放大问题
 
@@ -610,15 +658,17 @@ def normalize_advantages_per_task(
         task_types: (batch,) 任务类型
         eos_mask: (batch, seq_len) 有效token掩码
         epsilon: 数值稳定性
-        min_samples_for_norm: 最小样本数阈值 (V5新增)
-        min_std_for_norm: 最小标准差阈值 (V5新增)
-        use_conditional_norm: 是否启用条件归一化 (V5新增)
+        min_samples_for_norm: 最小样本数阈值
+        min_std_for_norm: 最小标准差阈值
+        use_conditional_norm: 是否启用条件归一化
+        min_samples_ratio: V6新增，相对阈值 (0表示不使用)
 
     Returns:
         normalized: (batch, seq_len) 归一化后的优势
     """
     result = advantages.clone()
     unique_tasks = np.unique(task_types)
+    total_samples = len(task_types)
 
     # 计算全局统计量 (用于小样本任务的后备归一化)
     all_valid_mask = eos_mask > 0
@@ -651,15 +701,33 @@ def normalize_advantages_per_task(
             mean = valid_adv.mean()
             std = valid_adv.std()
 
-            # V5条件归一化逻辑
+            # V6: 计算样本比例 (用于相对阈值判断)
+            sample_ratio = sample_count / total_samples
+
+            # V6条件归一化逻辑
             if use_conditional_norm:
-                if sample_count < min_samples_for_norm:
-                    # 方案A: 样本太少，使用全局统计量归一化
-                    # 这避免了小样本任务的噪声放大
+                # V6: 检查是否为小样本任务 (使用绝对或相对阈值)
+                is_small_sample = sample_count < min_samples_for_norm
+                if min_samples_ratio > 0:
+                    is_small_sample = is_small_sample or (sample_ratio < min_samples_ratio)
+
+                if is_small_sample:
+                    # 方案A: 样本太少，使用混合归一化策略
+                    # V6改进: 使用混合因子而非完全使用全局统计量
                     if global_std > epsilon:
-                        normalized_adv = (task_adv - global_mean) / (global_std + epsilon)
+                        # 混合因子: 样本越多，越偏向任务内统计量
+                        if min_samples_ratio > 0:
+                            blend_factor = min(1.0, sample_ratio / min_samples_ratio)
+                        else:
+                            blend_factor = min(1.0, sample_count / min_samples_for_norm)
+
+                        # 混合均值和标准差
+                        blended_mean = blend_factor * mean + (1 - blend_factor) * global_mean
+                        blended_std = blend_factor * std + (1 - blend_factor) * global_std
+
+                        normalized_adv = (task_adv - blended_mean) / (blended_std + epsilon)
                     else:
-                        normalized_adv = task_adv - global_mean
+                        normalized_adv = task_adv - mean
                     result[mask] = normalized_adv * task_eos
 
                 elif std < min_std_for_norm:

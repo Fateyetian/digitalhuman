@@ -274,11 +274,15 @@ class RebelRewardCalculator:
     def calculate_consistency_reward(
         self,
         belief_world: Dict[str, Any],
-        ground_truth: Dict[str, Any]
+        ground_truth: Dict[str, Any],
+        step: int = -1  # V6新增: 当前步数，用于早期宽松验证
     ) -> float:
         """
         Calculate environment consistency reward (r_consistency)
         Measures alignment between world_model_update and ground truth world state
+
+        V6改进: 当 ground_truth 信息不足时（早期阶段或解析不完整），
+        使用结构化奖励而非严格验证，避免正确预测被错误惩罚
 
         Args:
             belief_world: world_model_update from model
@@ -288,6 +292,7 @@ class RebelRewardCalculator:
                     "cleared_receptacles": ["recep1", "recep2"]
                 }
             ground_truth: Actual environment state
+            step: Current step number (V6新增)
 
         Returns:
             Consistency reward in [0, 1] range
@@ -298,16 +303,29 @@ class RebelRewardCalculator:
         score = 0.0
         components = []
 
+        # V6改进: 检查 ground_truth 是否足够完整
+        gt_objects = ground_truth.get('object_locations', {})
+        if not isinstance(gt_objects, dict):
+            gt_objects = {}
+
+        # V6: 如果是早期阶段(step < 3)或 ground_truth 信息不足(< 3个物体)
+        # 使用结构化奖励而非严格验证
+        use_lenient_mode = (step >= 0 and step < 3) or len(gt_objects) < 3
+
         # Component 1: Found objects accuracy (40% weight)
         found_objects = belief_world.get('found_objects', {}) or {}
         # Ensure found_objects is a dict, not a string
         if not isinstance(found_objects, dict):
             found_objects = {}
-        if found_objects:
-            gt_objects = ground_truth.get('object_locations', {})
-            if not isinstance(gt_objects, dict):
-                gt_objects = {}
 
+        if use_lenient_mode:
+            # V6: 宽松模式 - 奖励结构化的 belief 输出
+            if found_objects and len(found_objects) > 0:
+                # 有合理的物体预测，给予中性偏正的分数
+                components.append(0.6)
+            else:
+                components.append(0.4)  # 没有预测也不过度惩罚
+        elif found_objects:
             correct = 0
             total = 0
             false_claims = 0
@@ -349,7 +367,14 @@ class RebelRewardCalculator:
         # Ensure state_changes is a dict, not a string
         if not isinstance(state_changes, dict):
             state_changes = {}
-        if state_changes:
+
+        if use_lenient_mode:
+            # V6: 宽松模式
+            if state_changes and len(state_changes) > 0:
+                components.append(0.6)
+            else:
+                components.append(0.5)  # 中性分数
+        elif state_changes:
             gt_states = ground_truth.get('object_states', {})
             if not isinstance(gt_states, dict):
                 gt_states = {}
@@ -395,7 +420,14 @@ class RebelRewardCalculator:
             cleared_receptacles = [cleared_receptacles] if cleared_receptacles else []
         elif not isinstance(cleared_receptacles, list):
             cleared_receptacles = []
-        if cleared_receptacles:
+
+        if use_lenient_mode:
+            # V6: 宽松模式
+            if cleared_receptacles:
+                components.append(0.6)
+            else:
+                components.append(0.5)
+        elif cleared_receptacles:
             gt_cleared_raw = ground_truth.get('cleared_receptacles', [])
             if isinstance(gt_cleared_raw, str):
                 gt_cleared_raw = [gt_cleared_raw] if gt_cleared_raw else []
@@ -552,25 +584,34 @@ class RebelRewardCalculator:
                         subgoal_score = min(1.0, 0.7 + overlap * 0.1)
 
         # V4新增: Component 4 - 状态改变检测 (对heat/cool/clean任务关键)
+        # V6改进: 增加 look_at 任务专用检测
         state_change_bonus = 0.0
         if task_type and world_model:
-            curr_state_changes = world_model.get('state_changes', {}) or {}
-            prev_state_changes = (prev_world_model or {}).get('state_changes', {}) or {}
+            task_lower = str(task_type).lower()
 
-            if isinstance(curr_state_changes, dict):
-                task_lower = str(task_type).lower()
-                for obj, state in curr_state_changes.items():
-                    state_lower = str(state).lower()
-                    prev_state = str(prev_state_changes.get(obj, '')).lower() if prev_state_changes else ''
+            # V6新增: look_at_obj_in_light 任务专用进度检测
+            if 'look_at' in task_lower:
+                state_change_bonus = self._calculate_look_at_progress(
+                    belief_progress, world_model, step, done, success
+                )
+            else:
+                # 原有的 heat/cool/clean 检测
+                curr_state_changes = world_model.get('state_changes', {}) or {}
+                prev_state_changes = (prev_world_model or {}).get('state_changes', {}) or {}
 
-                    # 检测是否有新的状态改变
-                    if state_lower != prev_state:
-                        if 'heat' in task_lower and any(x in state_lower for x in ['heated', 'hot', 'cooked']):
-                            state_change_bonus = 0.3  # 完成了加热
-                        elif 'cool' in task_lower and any(x in state_lower for x in ['cooled', 'cold', 'chilled']):
-                            state_change_bonus = 0.3  # 完成了冷却
-                        elif 'clean' in task_lower and any(x in state_lower for x in ['cleaned', 'clean', 'washed']):
-                            state_change_bonus = 0.3  # 完成了清洁
+                if isinstance(curr_state_changes, dict):
+                    for obj, state in curr_state_changes.items():
+                        state_lower = str(state).lower()
+                        prev_state = str(prev_state_changes.get(obj, '')).lower() if prev_state_changes else ''
+
+                        # 检测是否有新的状态改变
+                        if state_lower != prev_state:
+                            if 'heat' in task_lower and any(x in state_lower for x in ['heated', 'hot', 'cooked']):
+                                state_change_bonus = 0.3  # 完成了加热
+                            elif 'cool' in task_lower and any(x in state_lower for x in ['cooled', 'cold', 'chilled']):
+                                state_change_bonus = 0.3  # 完成了冷却
+                            elif 'clean' in task_lower and any(x in state_lower for x in ['cleaned', 'clean', 'washed']):
+                                state_change_bonus = 0.3  # 完成了清洁
 
         # Weighted combination: 35%, 25%, 25%, 15% (调整权重以容纳新组件)
         if state_change_bonus > 0:
@@ -588,6 +629,66 @@ class RebelRewardCalculator:
             )
 
         return score * self.progress_scale
+
+    def _calculate_look_at_progress(
+        self,
+        belief_progress: Dict[str, Any],
+        world_model: Dict[str, Any],
+        step: int,
+        done: bool,
+        success: bool
+    ) -> float:
+        """
+        V6新增: look_at_obj_in_light 任务专用进度检测
+
+        该任务的关键阶段:
+        1. 找到目标物体并拾取 (+0.15)
+        2. 找到灯光源 (+0.2)
+        3. 使用灯检查物体 (+0.25)
+        4. 任务完成 (+0.4)
+
+        Args:
+            belief_progress: task_progress_update
+            world_model: world_model_update
+            step: 当前步数
+            done: 是否结束
+            success: 是否成功
+
+        Returns:
+            bonus: [0, 1.0]
+        """
+        bonus = 0.0
+        subgoal = str(belief_progress.get('updated_subgoal', '')).lower()
+
+        # 阶段1: 拾取目标物体 (+0.15)
+        # 检查 inventory 是否有物品
+        inventory = world_model.get('inventory', []) or []
+        if isinstance(inventory, str):
+            inventory = [inventory] if inventory else []
+        if inventory and len(inventory) > 0:
+            bonus += 0.15
+
+        # 阶段2: 找到灯光源 (+0.2)
+        # 检查 found_objects 中是否有 lamp/light
+        found_objects = world_model.get('found_objects', {}) or {}
+        if isinstance(found_objects, dict):
+            has_lamp = any('lamp' in str(k).lower() or 'light' in str(k).lower()
+                          for k in found_objects.keys())
+            # 也检查 subgoal 中是否提到找到了灯
+            has_lamp = has_lamp or any(x in subgoal for x in ['found lamp', 'lamp found', 'see lamp', 'lamp is'])
+            if has_lamp:
+                bonus += 0.2
+
+        # 阶段3: 使用灯检查物体 (+0.25)
+        # 检查 subgoal 是否包含使用灯的关键词
+        if any(x in subgoal for x in ['turn on', 'use lamp', 'examine', 'look at', 'using lamp']):
+            bonus += 0.25
+
+        # 阶段4: 任务完成 (+0.4)
+        if done and success:
+            bonus += 0.4
+
+        return min(1.0, bonus)  # 限制最大值为1.0
 
     def calculate_exploration_reward(
         self,
@@ -770,7 +871,8 @@ class RebelRewardCalculator:
         if not isinstance(exploration_map, dict):
             exploration_map = {}
 
-        r_consistency = self.calculate_consistency_reward(world_model, ground_truth)
+        # V6: 传递 step 参数给 consistency_reward
+        r_consistency = self.calculate_consistency_reward(world_model, ground_truth, step)
         r_progress = self.calculate_progress_reward(task_progress, ground_truth, step, done, success)
         r_exploration = self.calculate_exploration_reward(exploration_map, ground_truth, step)
         r_format = self.calculate_format_reward(is_format_valid, is_action_available)
@@ -794,9 +896,273 @@ class RebelRewardCalculator:
         return total_reward, breakdown
 
 
+# ============================================================================ #
+# ====================== Belief Deviation Metrics ============================ #
+# ============================================================================ #
+
+class BeliefDeviationCalculator:
+    """
+    Calculate belief deviation metrics between model predictions and ground truth.
+
+    This class computes various metrics to measure how well the model's belief state
+    aligns with the actual environment state. These metrics are useful for:
+    1. Monitoring model's world understanding during training
+    2. Analyzing failure cases
+    3. Paper experiments and ablation studies
+    """
+
+    @staticmethod
+    def compute_object_location_deviation(
+        belief_world: Dict[str, Any],
+        ground_truth: Dict[str, Any]
+    ) -> Dict[str, float]:
+        """
+        Compute deviation in object location predictions.
+
+        Args:
+            belief_world: world_model_update from model prediction
+            ground_truth: actual environment state
+
+        Returns:
+            Dict with precision, recall, f1, and deviation score
+        """
+        # Extract predicted and actual object locations
+        predicted = belief_world.get('found_objects', {}) or {}
+        if not isinstance(predicted, dict):
+            predicted = {}
+
+        actual = ground_truth.get('object_locations', {}) or {}
+        if not isinstance(actual, dict):
+            actual = {}
+
+        if not predicted and not actual:
+            return {'precision': 1.0, 'recall': 1.0, 'f1': 1.0, 'deviation': 0.0}
+
+        if not predicted:
+            return {'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'deviation': 1.0}
+
+        if not actual:
+            # Model predicted objects but none exist - penalize false positives
+            return {'precision': 0.0, 'recall': 1.0, 'f1': 0.0, 'deviation': 1.0}
+
+        # Normalize keys for comparison
+        pred_normalized = {k.lower().strip(): v.lower().strip() if isinstance(v, str) else str(v)
+                          for k, v in predicted.items() if k and v}
+        actual_normalized = {k.lower().strip(): v.lower().strip() if isinstance(v, str) else str(v)
+                           for k, v in actual.items() if k and v}
+
+        # Calculate matches
+        true_positives = 0
+        for obj, loc in pred_normalized.items():
+            for actual_obj, actual_loc in actual_normalized.items():
+                if (obj in actual_obj or actual_obj in obj):
+                    if (loc in actual_loc or actual_loc in loc):
+                        true_positives += 1
+                        break
+
+        precision = true_positives / len(pred_normalized) if pred_normalized else 0.0
+        recall = true_positives / len(actual_normalized) if actual_normalized else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        # Deviation is inverse of F1
+        deviation = 1.0 - f1
+
+        return {
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'deviation': deviation
+        }
+
+    @staticmethod
+    def compute_state_deviation(
+        belief_world: Dict[str, Any],
+        ground_truth: Dict[str, Any]
+    ) -> Dict[str, float]:
+        """
+        Compute deviation in object state predictions (hot/cold/clean/dirty/open/closed).
+
+        Args:
+            belief_world: world_model_update from model prediction
+            ground_truth: actual environment state
+
+        Returns:
+            Dict with accuracy and deviation score
+        """
+        predicted_states = belief_world.get('state_changes', {}) or {}
+        if not isinstance(predicted_states, dict):
+            predicted_states = {}
+
+        actual_states = ground_truth.get('object_states', {}) or {}
+        if not isinstance(actual_states, dict):
+            actual_states = {}
+
+        if not predicted_states and not actual_states:
+            return {'accuracy': 1.0, 'deviation': 0.0, 'n_predictions': 0}
+
+        if not predicted_states:
+            return {'accuracy': 0.0, 'deviation': 1.0 if actual_states else 0.0, 'n_predictions': 0}
+
+        # Check accuracy of state predictions
+        correct = 0
+        total = len(predicted_states)
+
+        for obj, pred_state in predicted_states.items():
+            if not isinstance(pred_state, str):
+                continue
+            obj_lower = obj.lower().strip()
+            pred_state_lower = pred_state.lower().strip()
+
+            for actual_obj, actual_state in actual_states.items():
+                if not isinstance(actual_state, str):
+                    continue
+                if obj_lower in actual_obj.lower() or actual_obj.lower() in obj_lower:
+                    if pred_state_lower == actual_state.lower().strip():
+                        correct += 1
+                    break
+
+        accuracy = correct / total if total > 0 else 0.0
+        deviation = 1.0 - accuracy
+
+        return {
+            'accuracy': accuracy,
+            'deviation': deviation,
+            'n_predictions': total
+        }
+
+    @staticmethod
+    def compute_exploration_deviation(
+        belief_exploration: Dict[str, Any],
+        ground_truth: Dict[str, Any]
+    ) -> Dict[str, float]:
+        """
+        Compute deviation in exploration tracking (visited locations).
+
+        Args:
+            belief_exploration: exploration_map_update from model prediction
+            ground_truth: actual environment state
+
+        Returns:
+            Dict with precision, recall, f1, and deviation score
+        """
+        predicted_visited = belief_exploration.get('newly_visited', []) or []
+        if isinstance(predicted_visited, str):
+            predicted_visited = [predicted_visited] if predicted_visited else []
+        elif not isinstance(predicted_visited, list):
+            predicted_visited = []
+
+        actual_visited = ground_truth.get('visited', []) or []
+        if isinstance(actual_visited, str):
+            actual_visited = [actual_visited] if actual_visited else []
+        elif not isinstance(actual_visited, list):
+            actual_visited = []
+
+        if not predicted_visited and not actual_visited:
+            return {'precision': 1.0, 'recall': 1.0, 'f1': 1.0, 'deviation': 0.0}
+
+        # Normalize for comparison
+        pred_set = set(v.lower().strip() for v in predicted_visited if v and isinstance(v, str))
+        actual_set = set(v.lower().strip() for v in actual_visited if v and isinstance(v, str))
+
+        if not pred_set:
+            return {'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'deviation': 1.0}
+
+        if not actual_set:
+            return {'precision': 0.0, 'recall': 1.0, 'f1': 0.0, 'deviation': 1.0}
+
+        # Calculate intersection
+        true_positives = len(pred_set & actual_set)
+
+        precision = true_positives / len(pred_set) if pred_set else 0.0
+        recall = true_positives / len(actual_set) if actual_set else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        deviation = 1.0 - f1
+
+        return {
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'deviation': deviation
+        }
+
+    @staticmethod
+    def compute_total_belief_deviation(
+        belief_state: Dict[str, Any],
+        ground_truth: Dict[str, Any],
+        weights: Dict[str, float] = None
+    ) -> Dict[str, Any]:
+        """
+        Compute overall belief deviation score combining all components.
+
+        Args:
+            belief_state: Full belief state from model
+                {
+                    "world_model_update": {...},
+                    "task_progress_update": {...},
+                    "exploration_map_update": {...}
+                }
+            ground_truth: Actual environment state
+            weights: Optional weights for each component (default: equal weights)
+
+        Returns:
+            Dict with component deviations and total weighted deviation
+        """
+        if weights is None:
+            weights = {
+                'object_location': 0.4,
+                'state': 0.3,
+                'exploration': 0.3
+            }
+
+        # Handle None or invalid belief_state
+        if not belief_state or not isinstance(belief_state, dict):
+            return {
+                'object_location': {'deviation': 1.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0},
+                'state': {'deviation': 1.0, 'accuracy': 0.0, 'n_predictions': 0},
+                'exploration': {'deviation': 1.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0},
+                'total_deviation': 1.0,
+                'belief_valid': False
+            }
+
+        world_model = belief_state.get('world_model_update', {}) or {}
+        exploration_map = belief_state.get('exploration_map_update', {}) or {}
+
+        # Compute component deviations
+        obj_loc_metrics = BeliefDeviationCalculator.compute_object_location_deviation(
+            world_model, ground_truth
+        )
+        state_metrics = BeliefDeviationCalculator.compute_state_deviation(
+            world_model, ground_truth
+        )
+        exploration_metrics = BeliefDeviationCalculator.compute_exploration_deviation(
+            exploration_map, ground_truth
+        )
+
+        # Compute weighted total deviation
+        total_deviation = (
+            weights['object_location'] * obj_loc_metrics['deviation'] +
+            weights['state'] * state_metrics['deviation'] +
+            weights['exploration'] * exploration_metrics['deviation']
+        )
+
+        return {
+            'object_location': obj_loc_metrics,
+            'state': state_metrics,
+            'exploration': exploration_metrics,
+            'total_deviation': total_deviation,
+            'belief_valid': True
+        }
+
+
 # Factory function for easy import
 def create_rebel_tracker():
     """Create ReBel components"""
     parser = BeliefStateParser()
     calculator = RebelRewardCalculator(alpha=0.3, beta=0.5, gamma=0.2, delta=0.1)
     return parser, calculator
+
+
+def create_belief_deviation_calculator():
+    """Create BeliefDeviationCalculator instance"""
+    return BeliefDeviationCalculator()

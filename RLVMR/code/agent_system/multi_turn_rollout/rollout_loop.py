@@ -710,6 +710,19 @@ class TrajectoryCollector:
         if hasattr(self.config.algorithm, 'rebel') and getattr(self.config.algorithm.rebel, 'enable', False):
             rebel_intrinsic_rewards = []
 
+            # V7: Import BeliefDeviationCalculator for belief deviation metrics
+            from agent_system.environments.env_package.alfworld import BeliefDeviationCalculator
+            belief_deviation_calc = BeliefDeviationCalculator()
+
+            # V7: Collect belief deviation metrics
+            belief_deviations = {
+                'total': [],
+                'object_location': [],
+                'state': [],
+                'exploration': [],
+                'belief_valid_ratio': []
+            }
+
             for env_idx in range(len(total_batch_list)):
                 traj = total_batch_list[env_idx]
                 infos_seq = total_infos[env_idx]
@@ -732,13 +745,44 @@ class TrajectoryCollector:
                     task_type = info.get('task_type', 'unknown')
                     step['task_type'] = task_type
 
+                    # V6: Store gamefile (full task name) and success status
+                    gamefile = info.get('extra.gamefile', '')
+                    step['gamefile'] = gamefile
+                    step['won'] = info.get('won', False)
+
                     rebel_intrinsic_rewards.append(rebel_intrinsic)
+
+                    # V7: Compute belief deviation metrics
+                    ground_truth = info.get('ground_truth_state', {})
+                    if ground_truth:
+                        deviation_metrics = belief_deviation_calc.compute_total_belief_deviation(
+                            belief_state=belief_state,
+                            ground_truth=ground_truth
+                        )
+                        belief_deviations['total'].append(deviation_metrics['total_deviation'])
+                        belief_deviations['object_location'].append(deviation_metrics['object_location']['deviation'])
+                        belief_deviations['state'].append(deviation_metrics['state']['deviation'])
+                        belief_deviations['exploration'].append(deviation_metrics['exploration']['deviation'])
+                        belief_deviations['belief_valid_ratio'].append(1.0 if deviation_metrics['belief_valid'] else 0.0)
+
+                        # Store deviation in step for detailed analysis
+                        step['belief_deviation'] = deviation_metrics
 
             # Statistics for logging
             meta_info_rebel = {
                 "intrinsic_reward": _safe_stat(rebel_intrinsic_rewards),
                 "n_steps": len(rebel_intrinsic_rewards),
             }
+
+            # V7: Add belief deviation statistics
+            if belief_deviations['total']:
+                meta_info_rebel["belief_deviation"] = {
+                    "total": _safe_stat(belief_deviations['total']),
+                    "object_location": _safe_stat(belief_deviations['object_location']),
+                    "state": _safe_stat(belief_deviations['state']),
+                    "exploration": _safe_stat(belief_deviations['exploration']),
+                    "belief_valid_ratio": _safe_stat(belief_deviations['belief_valid_ratio']),
+                }
 
         # Create trajectory data
         gen_batch_output: DataProto = self.gather_rollout_data(

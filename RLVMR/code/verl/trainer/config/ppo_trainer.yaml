@@ -222,6 +222,20 @@ algorithm:
     conditional_norm: True             # Enable conditional normalization to protect small-sample tasks
     min_samples_for_norm: 10           # Minimum samples for per-task normalization (use global stats if below)
     min_std_for_norm: 0.1              # Minimum std for normalization (use conservative norm if below)
+    min_samples_ratio: 0.0             # V6: Minimum sample ratio for relative threshold normalization (0.0 = disabled)
+    # V7 Improvements - Entropy collapse prevention
+    entropy_protection:
+      enable: False                    # Enable entropy protection mechanisms
+      method: "clip_cov"               # Method: 'clip_cov', 'kl_cov', or 'task_adaptive_entropy'
+      # Clip-Cov parameters (limit updates on high-covariance tokens)
+      clip_cov_lb: 0.0                 # Lower bound for covariance clipping
+      clip_cov_ub: 1.0                 # Upper bound for covariance clipping (tokens in [lb, ub] are not updated)
+      # KL-Cov parameters (add extra KL penalty on high-covariance tokens)
+      kl_cov_coef: 0.1                 # Extra KL coefficient for high-cov tokens
+      kl_cov_top_k_ratio: 0.1          # Top-k ratio of high-cov tokens to penalize
+      # Task-adaptive entropy parameters (boost entropy for minority tasks)
+      minority_task_threshold: 0.1     # Tasks with sample ratio below this are considered minority
+      minority_entropy_boost: 2.0      # Entropy coefficient multiplier for minority tasks
   filter_groups: # DAPO from https://arxiv.org/abs/2503.14476
     enable: False
     max_num_gen_batches: 10

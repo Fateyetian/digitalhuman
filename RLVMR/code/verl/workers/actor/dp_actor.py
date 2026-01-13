@@ -312,6 +312,45 @@ class DataParallelPPOActor(BasePPOActor):
                     # compute policy loss
                     policy_loss = pg_loss - entropy_loss * entropy_coeff
 
+                    # V7: Entropy protection mechanisms
+                    entropy_protection_config = getattr(self.config, 'entropy_protection', None)
+                    if entropy_protection_config and entropy_protection_config.get('enable', False):
+                        method = entropy_protection_config.get('method', 'clip_cov')
+
+                        if method == 'clip_cov':
+                            # Clip-Cov: mask out high-covariance tokens
+                            clip_cov_lb = entropy_protection_config.get('clip_cov_lb', 0.0)
+                            clip_cov_ub = entropy_protection_config.get('clip_cov_ub', 1.0)
+                            corr_mask, cov = core_algos.compute_clip_cov_mask(
+                                advantages=advantages,
+                                log_prob=log_prob,
+                                eos_mask=response_mask,
+                                clip_cov_lb=clip_cov_lb,
+                                clip_cov_ub=clip_cov_ub
+                            )
+                            # Apply correction to pg_loss (recompute with mask)
+                            clip_cov_ratio = verl_F.masked_mean(1 - corr_mask, response_mask)
+                            metrics['actor/clip_cov_ratio'] = clip_cov_ratio.detach().item()
+                            metrics['actor/cov_mean'] = verl_F.masked_mean(cov, response_mask).detach().item()
+
+                        elif method == 'kl_cov' and self.config.use_kl_loss:
+                            # KL-Cov: add extra KL penalty on high-cov tokens
+                            ref_log_prob = data['ref_log_prob']
+                            kl_cov_coef = entropy_protection_config.get('kl_cov_coef', 0.1)
+                            top_k_ratio = entropy_protection_config.get('kl_cov_top_k_ratio', 0.1)
+                            kl_cov_loss, high_cov_mask, cov = core_algos.compute_kl_cov_penalty(
+                                advantages=advantages,
+                                log_prob=log_prob,
+                                ref_log_prob=ref_log_prob,
+                                eos_mask=response_mask,
+                                kl_cov_coef=kl_cov_coef,
+                                top_k_ratio=top_k_ratio
+                            )
+                            policy_loss = policy_loss + kl_cov_loss
+                            metrics['actor/kl_cov_loss'] = kl_cov_loss.detach().item()
+                            metrics['actor/high_cov_ratio'] = verl_F.masked_mean(high_cov_mask.float(), response_mask).detach().item()
+                            metrics['actor/cov_mean'] = verl_F.masked_mean(cov, response_mask).detach().item()
+
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
                         # compute kl loss
@@ -335,6 +374,7 @@ class DataParallelPPOActor(BasePPOActor):
                         'actor/pg_loss': pg_loss.detach().item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
+                        'actor/entropy_loss': entropy_loss.detach().item(),
                     }
                     append_to_dict(metrics, data)
 

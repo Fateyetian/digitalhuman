@@ -3,11 +3,15 @@
 # ReBel Hyperparameter Search - 小规模 RL 实验 + 自动报告生成
 # =============================================================================
 #
-# 第四个子实验 (重新运行): step_adv_w=0.5 + 验证集128 + 100 epochs
-# 注意: 每次运行会自动生成新目录，不会覆盖之前的结果
+# V2 Improvements:
+#   - Task-aware belief grouping (prevents cross-task interference)
+#   - Per-task advantage normalization (balances learning across tasks)
+#   - KL penalty adjustment (stabilizes training)
+#   - Entropy regularization (maintains exploration)
 #
 # Usage:
 #   bash run_rebel_hyperparam_search.sh [OPTIONS]
+#   bash run_rebel_hyperparam_search.sh --experiments v2_round1  # Run V2 experiments
 #
 # =============================================================================
 
@@ -18,7 +22,7 @@ set -e
 # =============================================================================
 
 SEARCH_NAME="rebel_search_$(date +%Y%m%d_%H%M%S)"
-NUM_GPUS=${NUM_GPUS:-4}
+NUM_GPUS=${NUM_GPUS:-8}
 
 # Offline mode
 export HF_HUB_OFFLINE=1
@@ -41,26 +45,70 @@ SFT_MODEL_PATH=${SFT_MODEL_PATH:-""}
 
 # 结果目录 - 使用大容量存储
 RESULTS_BASE="/fs-computility-new/UPDZ03_chengjun/huangsijie.p/rebel_results"
-RESULTS_DIR="${RESULTS_BASE}/hyperparam_search/${SEARCH_NAME}"
+# V1实验: hyperparam_search/
+# V2实验: v2_experiments/
+RESULTS_SUBDIR=${RESULTS_SUBDIR:-"hyperparam_search"}
+RESULTS_DIR="${RESULTS_BASE}/${RESULTS_SUBDIR}/${SEARCH_NAME}"
 
 # =============================================================================
-# ReBel 核心参数实验配置
-# 格式: "name|step_advantage_w|belief_granularity|lr|mode"
+# ReBel V1 核心参数实验配置 (Baseline)
+# 格式: "name|step_advantage_w|belief_granularity|lr|mode|kl_coef|entropy_coef|task_aware|per_task_norm"
 # =============================================================================
 
-# 完整实验列表（备份）:
-# EXPERIMENTS=(
-#     "baseline|1.0|subgoal|1e-6|mean_norm"
-#     "step_adv_0.5|0.5|subgoal|1e-6|mean_norm"
-#     "step_adv_2.0|2.0|subgoal|1e-6|mean_norm"
-#     "task_level|1.0|task|1e-6|mean_norm"
-# )
-
-# 第四个子实验: 使用最优配置 step_adv_w=0.5，扩大验证集到128，训练100 epochs
-# 实验名加上 _rerun 标识，便于区分
-EXPERIMENTS=(
-    "step_adv_0.5_val128_ep100_rerun|0.5|subgoal|1e-6|mean_norm"
+# V1 Baseline (from Exp6)
+V1_EXPERIMENTS=(
+    "v1_baseline|0.5|subgoal|1e-6|mean_norm|0.01|0.001|false|false"
 )
+
+# =============================================================================
+# ReBel V2 Experiments - Round 1: Single Factor Tests
+# 格式: "name|step_advantage_w|belief_granularity|lr|mode|kl_coef|entropy_coef|task_aware|per_task_norm"
+# =============================================================================
+
+V2_ROUND1_EXPERIMENTS=(
+    # Exp1: Task-aware grouping (核心改进)
+    "v2_task_aware|0.5|subgoal|1e-6|mean_norm|0.01|0.001|true|false"
+    # Exp2: Per-task normalization
+    "v2_per_task_norm|0.5|subgoal|1e-6|mean_norm|0.01|0.001|false|true"
+    # Exp3: KL penalty increase (0.01 -> 0.02)
+    "v2_kl_0.02|0.5|subgoal|1e-6|mean_norm|0.02|0.001|false|false"
+    # Exp4: Entropy increase (0.001 -> 0.005)
+    "v2_entropy_0.005|0.5|subgoal|1e-6|mean_norm|0.01|0.005|false|false"
+    # Exp5: Medium granularity
+    "v2_granularity_medium|0.5|medium|1e-6|mean_norm|0.01|0.001|false|false"
+)
+
+# =============================================================================
+# ReBel V2 Experiments - Round 2: Combination Tests
+# =============================================================================
+
+V2_ROUND2_EXPERIMENTS=(
+    # Exp6: Task-aware + Per-task norm (核心组合)
+    "v2_combo_core|0.5|subgoal|1e-6|mean_norm|0.01|0.001|true|true"
+    # Exp7: Core + KL调整
+    "v2_combo_core_kl|0.5|subgoal|1e-6|mean_norm|0.02|0.001|true|true"
+    # Exp8: Core + KL + 熵正则
+    "v2_combo_full|0.5|subgoal|1e-6|mean_norm|0.02|0.005|true|true"
+)
+
+# =============================================================================
+# ReBel V3 Experiments - Task Conflict Resolution
+# 格式: "name|step_advantage_w|granularity|lr|mode|kl_coef|entropy_coef|task_aware|per_task_norm|prompt_template"
+# prompt_template: default, explicit_task_type, belief_conditioned
+# =============================================================================
+
+V3_EXPERIMENTS=(
+    # Exp1: 显式任务类型标签 - 让模型明确知道当前任务类型
+    "v3_explicit_task_type|0.5|subgoal|1e-6|mean_norm|0.01|0.001|false|false|explicit_task_type"
+    # Exp2: 强化 belief state 条件化 - 突出当前 subgoal
+    "v3_belief_conditioned|0.5|subgoal|1e-6|mean_norm|0.01|0.001|false|false|belief_conditioned"
+)
+
+# =============================================================================
+# Default: Run V1 baseline
+# =============================================================================
+
+EXPERIMENTS=("${V1_EXPERIMENTS[@]}")
 
 # =============================================================================
 # Parse arguments
@@ -72,18 +120,74 @@ while [[ $# -gt 0 ]]; do
         --epochs) EPOCHS_PER_EXP="$2"; shift 2 ;;
         --experiments)
             case $2 in
-                minimal) EXPERIMENTS=("baseline|1.0|subgoal|1e-6|mean_norm") ;;
+                minimal) EXPERIMENTS=("v1_baseline|0.5|subgoal|1e-6|mean_norm|0.01|0.001|false|false") ;;
+                v1) EXPERIMENTS=("${V1_EXPERIMENTS[@]}") ;;
+                v2_round1)
+                    EXPERIMENTS=("${V2_ROUND1_EXPERIMENTS[@]}")
+                    RESULTS_SUBDIR="v2_experiments"
+                    ;;
+                v2_round2)
+                    EXPERIMENTS=("${V2_ROUND2_EXPERIMENTS[@]}")
+                    RESULTS_SUBDIR="v2_experiments"
+                    ;;
+                v2_all)
+                    EXPERIMENTS=("${V2_ROUND1_EXPERIMENTS[@]}" "${V2_ROUND2_EXPERIMENTS[@]}")
+                    RESULTS_SUBDIR="v2_experiments"
+                    ;;
+                v2_core)
+                    # 优先级排序：基于理论分析的有效性
+                    # 1. entropy 增加探索，可能发现更好策略
+                    # 2. KL 约束稳定训练
+                    # 3. task_aware 最后尝试
+                    EXPERIMENTS=("v2_entropy_0.005|0.5|subgoal|1e-6|mean_norm|0.01|0.005|false|false" "v2_kl_0.02|0.5|subgoal|1e-6|mean_norm|0.02|0.001|false|false" "v2_task_aware|0.5|subgoal|1e-6|mean_norm|0.01|0.001|true|false")
+                    RESULTS_SUBDIR="v2_experiments"
+                    ;;
+                v3)
+                    # V3: Task conflict resolution via prompt-level conditioning
+                    # Exp1: 显式任务类型标签 (只加任务类型，不给策略)
+                    # Exp2: 强化 belief state 条件化 (突出当前 subgoal)
+                    EXPERIMENTS=("${V3_EXPERIMENTS[@]}")
+                    RESULTS_SUBDIR="v3_experiments"
+                    ;;
                 *) ;;
             esac
             shift 2 ;;
         --help|-h)
             echo "Usage: bash run_rebel_hyperparam_search.sh [OPTIONS]"
-            echo "  --sft-model PATH    SFT checkpoint path"
-            echo "  --epochs N          Epochs per experiment (default: 50)"
+            echo ""
+            echo "Options:"
+            echo "  --sft-model PATH        SFT checkpoint path"
+            echo "  --epochs N              Epochs per experiment (default: 100)"
+            echo "  --experiments PRESET    Experiment preset:"
+            echo "      minimal             Single baseline experiment"
+            echo "      v1                  V1 baseline (Exp6 config)"
+            echo "      v2_round1           V2 single-factor tests (5 experiments)"
+            echo "      v2_round2           V2 combination tests (3 experiments)"
+            echo "      v2_all              All V2 experiments (8 experiments)"
+            echo "      v2_core             Core V2 experiments (task-aware + per-task-norm)"
+            echo "      v3                  V3 task conflict resolution (prompt-level)"
+            echo ""
+            echo "Results directories:"
+            echo "  V1 experiments -> hyperparam_search/"
+            echo "  V2 experiments -> v2_experiments/"
+            echo "  V3 experiments -> v3_experiments/"
+            echo ""
+            echo "V2 Improvements:"
+            echo "  - task_aware_grouping: Group beliefs within same task type"
+            echo "  - per_task_normalization: Normalize advantages per task"
+            echo "  - kl_loss_coef: KL penalty (0.01 -> 0.02)"
+            echo "  - entropy_coeff: Entropy regularization (0.001 -> 0.005)"
+            echo ""
+            echo "V3 Improvements (Task Conflict Resolution):"
+            echo "  - explicit_task_type: Add task type label to prompt"
+            echo "  - belief_conditioned: Emphasize current subgoal in action decision"
             exit 0 ;;
         *) shift ;;
     esac
 done
+
+# 更新RESULTS_DIR（在解析参数后）
+RESULTS_DIR="${RESULTS_BASE}/${RESULTS_SUBDIR}/${SEARCH_NAME}"
 
 # =============================================================================
 # Utility
@@ -127,17 +231,30 @@ run_experiment() {
     local index="$2"
     local total="$3"
 
-    IFS='|' read -r exp_name step_adv_w granularity lr mode <<< "${config}"
+    # Parse V3 config format: "name|step_adv_w|granularity|lr|mode|kl_coef|entropy_coef|task_aware|per_task_norm|prompt_template"
+    IFS='|' read -r exp_name step_adv_w granularity lr mode kl_coef entropy_coef task_aware per_task_norm prompt_template <<< "${config}"
+
+    # Default values for compatibility
+    kl_coef=${kl_coef:-0.01}
+    entropy_coef=${entropy_coef:-0.001}
+    task_aware=${task_aware:-false}
+    per_task_norm=${per_task_norm:-false}
+    prompt_template=${prompt_template:-default}
 
     local exp_dir="${RESULTS_DIR}/${exp_name}"
     local checkpoint_dir="${exp_dir}/checkpoints"
     mkdir -p "${exp_dir}" "${checkpoint_dir}"
 
     print_header "Experiment ${index}/${total}: ${exp_name}"
-    echo "  step_advantage_w:    ${step_adv_w}"
-    echo "  belief_granularity:  ${granularity}"
-    echo "  learning_rate:       ${lr}"
-    echo "  mode:                ${mode}"
+    echo "  step_advantage_w:      ${step_adv_w}"
+    echo "  belief_granularity:    ${granularity}"
+    echo "  learning_rate:         ${lr}"
+    echo "  mode:                  ${mode}"
+    echo "  kl_loss_coef:          ${kl_coef}"
+    echo "  entropy_coeff:         ${entropy_coef}"
+    echo "  task_aware_grouping:   ${task_aware}"
+    echo "  per_task_normalization: ${per_task_norm}"
+    echo "  prompt_template:       ${prompt_template}"
     echo ""
 
     local start_time=$(date +%s)
@@ -148,13 +265,15 @@ run_experiment() {
         --train_data_size ${TRAIN_SIZE} \
         --val_data_size ${VAL_SIZE} 2>/dev/null || true
 
-    # RL Training
+    # RL Training with V2 parameters
     python3 -m verl.trainer.main_ppo \
         algorithm.adv_estimator=rebel \
         algorithm.rebel.enable=True \
         algorithm.rebel.belief_granularity="${granularity}" \
         algorithm.rebel.step_advantage_w=${step_adv_w} \
         algorithm.rebel.mode="${mode}" \
+        algorithm.rebel.task_aware_grouping=${task_aware} \
+        algorithm.rebel.per_task_normalization=${per_task_norm} \
         data.train_files=$HOME/data/verl-agent/text/train.parquet \
         data.val_files=$HOME/data/verl-agent/text/test.parquet \
         data.train_batch_size=${TRAIN_SIZE} \
@@ -167,10 +286,10 @@ run_experiment() {
         actor_rollout_ref.model.path="${SFT_MODEL_PATH}" \
         actor_rollout_ref.actor.optim.lr=${lr} \
         actor_rollout_ref.actor.clip_ratio=0.2 \
-        actor_rollout_ref.actor.entropy_coeff=0.001 \
+        actor_rollout_ref.actor.entropy_coeff=${entropy_coef} \
         actor_rollout_ref.actor.ppo_epochs=1 \
         actor_rollout_ref.actor.use_kl_loss=True \
-        actor_rollout_ref.actor.kl_loss_coef=0.01 \
+        actor_rollout_ref.actor.kl_loss_coef=${kl_coef} \
         actor_rollout_ref.actor.kl_loss_type=low_var_kl \
         actor_rollout_ref.model.use_remove_padding=True \
         actor_rollout_ref.actor.ppo_mini_batch_size=256 \
@@ -197,6 +316,7 @@ run_experiment() {
         env.alfworld.generalization_level=0 \
         env.alfworld.meta_think=True \
         env.alfworld.use_rebel=True \
+        env.alfworld.prompt_template_type="${prompt_template}" \
         env.use_teacher_planner=True \
         trainer.critic_warmup=0 \
         trainer.logger="['console','swanlab']" \

@@ -1,0 +1,27 @@
+实验名称: rebel_v6_exp3_full_improvements_20260107_115538
+实验描述: V6-Exp3: 全部改进 + KL in Reward
+开始时间: Wed Jan  7 11:55:42 UTC 2026
+
+V6 核心代码改进:
+  - Stage Type 优先级修复: "find" 优先于 "lamp"
+  - Ground Truth 宽松验证: 早期阶段(step<3)或GT不完整时使用结构化奖励
+  - look_at 专用进度检测: 4阶段奖励(拾取+找灯+使用+完成)
+
+实验配置:
+  - belief_granularity: adaptive
+  - task_aware_grouping: true
+  - per_task_normalization: true
+  - conditional_norm: true
+  - min_samples_for_norm: 10
+  - min_std_for_norm: 0.2
+  - min_samples_ratio: 0.15
+  - use_kl_in_reward: True
+  - kl_penalty: kl
+  - kl_coef: 0.001
+  - use_kl_loss: False
+  - kl_loss_coef: 0
+
+硬件配置:
+  - GPU数量: 4
+  - 训练轮数: 60
+  - SFT模型: /root/testttt/RLVMR/code/checkpoints/cold_start/alfworld/rebel_full_20251225_024950/global_step_90

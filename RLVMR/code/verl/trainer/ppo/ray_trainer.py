@@ -46,6 +46,9 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from gigpo import core_gigpo
 from rlvmr import core_rlvmr
 from agent_system.multi_turn_rollout import TrajectoryCollector, adjust_batch
+from collections import Counter
+import json
+from datetime import datetime
 
 WorkerType = Type[Worker]
 
@@ -471,6 +474,13 @@ class RayPPOTrainer(object):
         self.ray_worker_group_cls = ray_worker_group_cls
         self.validation_generations_logger = ValidationGenerationsLogger()
 
+        # V6: 任务分布记录器 - 记录每个epoch的训练/测试任务分布
+        self.task_distribution_log = {
+            'experiment_name': config.trainer.get('experiment_name', 'unknown'),
+            'epochs': []
+        }
+        self.task_distribution_file = None  # 在fit()中初始化
+
         # define in-reward KL control
         # kl loss control currently not suppoorted
         if config.algorithm.use_kl_in_reward:
@@ -702,6 +712,9 @@ class RayPPOTrainer(object):
         reward_tensor_lst = []
         data_source_lst = []
         success_rate_dict = {}
+        val_task_types = []  # V6: 收集验证任务类型
+        val_gamefiles = []   # V6: 收集完整任务名
+        val_success_flags = []  # V6: 收集成功状态
 
         # Lists to collect samples for the table
         sample_inputs = []
@@ -796,6 +809,14 @@ class RayPPOTrainer(object):
                     for i in range(1, len(test_batch.non_tensor_batch[k])):
                         assert test_batch.non_tensor_batch[k][0] == test_batch.non_tensor_batch[k][i], f'not all success_rate are the same, 0: {test_batch.non_tensor_batch[k][0]}, {i}: {test_batch.non_tensor_batch[k][i]}'
 
+            # V6: 收集验证任务类型、gamefile和成功状态
+            if 'task_type' in test_batch.non_tensor_batch:
+                val_task_types.extend(test_batch.non_tensor_batch['task_type'])
+            if 'gamefile' in test_batch.non_tensor_batch:
+                val_gamefiles.extend(test_batch.non_tensor_batch['gamefile'])
+            if 'won' in test_batch.non_tensor_batch:
+                val_success_flags.extend(test_batch.non_tensor_batch['won'])
+
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
         reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
@@ -827,7 +848,105 @@ class RayPPOTrainer(object):
             avg_val_belief_parse = np.mean(test_batch.non_tensor_batch['belief_parse_rate'])
             metric_dict['val/avg_belief_parse_rate'] = avg_val_belief_parse
 
+        # V6: 记录验证任务分布
+        if val_task_types:
+            self._record_task_distribution(
+                task_types=val_task_types,
+                gamefiles=val_gamefiles if val_gamefiles else None,
+                success_flags=val_success_flags if val_success_flags else None,
+                phase='val',
+                epoch=self.global_steps
+            )
+
         return metric_dict
+
+    def _record_task_distribution(self, task_types, gamefiles=None, success_flags=None, phase='train', epoch=None):
+        """
+        V6增强: 记录训练/测试任务的完整信息
+
+        Args:
+            task_types: 任务类型列表
+            gamefiles: 完整任务名（gamefile路径）列表
+            success_flags: 任务成功标志列表
+            phase: 'train' 或 'val'
+            epoch: 当前epoch编号
+        """
+        if task_types is None or len(task_types) == 0:
+            return
+
+        # 统计任务类型分布
+        task_counter = Counter(task_types)
+        total_samples = len(task_types)
+
+        # 构建任务类型分布统计
+        distribution = {
+            task: {
+                'count': count,
+                'ratio': count / total_samples if total_samples > 0 else 0
+            }
+            for task, count in task_counter.items()
+        }
+
+        # 构建详细任务列表
+        task_details = []
+        for i in range(len(task_types)):
+            detail = {
+                'task_type': task_types[i] if i < len(task_types) else 'unknown',
+            }
+            if gamefiles is not None and i < len(gamefiles):
+                # 从gamefile提取简短的任务名
+                gamefile = gamefiles[i]
+                if gamefile:
+                    # gamefile格式: /path/to/pick_and_place_simple-Potato-None-...
+                    task_name = gamefile.split('/')[-1] if '/' in gamefile else gamefile
+                    detail['task_name'] = task_name
+                    detail['gamefile'] = gamefile
+            if success_flags is not None and i < len(success_flags):
+                detail['success'] = bool(success_flags[i])
+            task_details.append(detail)
+
+        # 计算每个任务类型的成功率
+        task_success_rates = {}
+        if success_flags is not None:
+            for task_type in task_counter.keys():
+                task_indices = [i for i, t in enumerate(task_types) if t == task_type]
+                task_successes = [success_flags[i] for i in task_indices if i < len(success_flags)]
+                if task_successes:
+                    task_success_rates[task_type] = {
+                        'success_count': sum(task_successes),
+                        'total_count': len(task_successes),
+                        'success_rate': sum(task_successes) / len(task_successes)
+                    }
+
+        record = {
+            'phase': phase,
+            'epoch': epoch if epoch is not None else self.global_steps,
+            'total_samples': total_samples,
+            'task_type_distribution': distribution,
+            'task_success_rates': task_success_rates,
+            'task_details': task_details,
+            'timestamp': datetime.now().isoformat()
+        }
+
+        self.task_distribution_log['epochs'].append(record)
+
+        # 实时保存到文件
+        if self.task_distribution_file:
+            try:
+                with open(self.task_distribution_file, 'w') as f:
+                    json.dump(self.task_distribution_log, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"Warning: Failed to save task distribution log: {e}")
+
+        # 打印当前分布
+        print(f"\n[Task Distribution] {phase.upper()} - Epoch {epoch}:")
+        print(f"  Total samples: {total_samples}")
+        for task, info in sorted(distribution.items(), key=lambda x: -x[1]['count']):
+            success_info = ""
+            if task in task_success_rates:
+                sr = task_success_rates[task]
+                success_info = f" (success: {sr['success_count']}/{sr['total_count']} = {sr['success_rate']*100:.1f}%)"
+            print(f"  {task}: {info['count']} ({info['ratio']*100:.1f}%){success_info}")
 
     def init_workers(self):
         """Init resource pool and worker group"""
@@ -1028,6 +1147,13 @@ class RayPPOTrainer(object):
 
         self.global_steps = 0
 
+        # V6: 初始化任务分布记录文件
+        task_dist_dir = self.config.trainer.get('default_local_dir', 'checkpoints')
+        os.makedirs(task_dist_dir, exist_ok=True)
+        self.task_distribution_file = os.path.join(task_dist_dir, 'task_distribution.json')
+        self.task_distribution_log['start_time'] = datetime.now().isoformat()
+        print(f"[V6] Task distribution will be saved to: {self.task_distribution_file}")
+
         # load checkpoint before doing anything
         print("=" * 80)
         print("[DEBUG] 步骤1: 开始加载 checkpoint...")
@@ -1123,6 +1249,18 @@ class RayPPOTrainer(object):
                     # batch = batch.union(gen_batch_output)
                     del batch
                     batch = gen_batch_output
+
+                    # V6: 记录训练任务分布
+                    if 'task_type' in batch.non_tensor_batch:
+                        train_gamefiles = batch.non_tensor_batch.get('gamefile', None)
+                        train_success = batch.non_tensor_batch.get('won', None)
+                        self._record_task_distribution(
+                            task_types=batch.non_tensor_batch['task_type'],
+                            gamefiles=train_gamefiles,
+                            success_flags=train_success,
+                            phase='train',
+                            epoch=epoch + 1  # epoch从0开始，显示时+1
+                        )
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.GiGPO:
                         step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
@@ -1249,6 +1387,34 @@ class RayPPOTrainer(object):
                 for key in batch.meta_info:
                     if key.startswith('rebel/'):
                         metrics[key] = batch.meta_info[key]
+
+                # V7: Add belief deviation metrics from rebel_stats
+                if 'rebel_stats' in batch.meta_info:
+                    rebel_stats = batch.meta_info['rebel_stats']
+                    # Intrinsic reward stats
+                    if 'intrinsic_reward' in rebel_stats:
+                        ir_stats = rebel_stats['intrinsic_reward']
+                        metrics['rebel/intrinsic_reward_mean'] = ir_stats.get('mean', 0.0)
+                        metrics['rebel/intrinsic_reward_std'] = ir_stats.get('std', 0.0)
+                    # Belief deviation stats (V7 new metrics for paper)
+                    if 'belief_deviation' in rebel_stats:
+                        bd_stats = rebel_stats['belief_deviation']
+                        # Total deviation
+                        if 'total' in bd_stats:
+                            metrics['rebel/belief_deviation_total_mean'] = bd_stats['total'].get('mean', 0.0)
+                            metrics['rebel/belief_deviation_total_std'] = bd_stats['total'].get('std', 0.0)
+                        # Object location deviation
+                        if 'object_location' in bd_stats:
+                            metrics['rebel/belief_deviation_obj_loc_mean'] = bd_stats['object_location'].get('mean', 0.0)
+                        # State deviation
+                        if 'state' in bd_stats:
+                            metrics['rebel/belief_deviation_state_mean'] = bd_stats['state'].get('mean', 0.0)
+                        # Exploration deviation
+                        if 'exploration' in bd_stats:
+                            metrics['rebel/belief_deviation_explore_mean'] = bd_stats['exploration'].get('mean', 0.0)
+                        # Belief valid ratio
+                        if 'belief_valid_ratio' in bd_stats:
+                            metrics['rebel/belief_valid_ratio'] = bd_stats['belief_valid_ratio'].get('mean', 0.0)
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)

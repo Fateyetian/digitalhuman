@@ -362,6 +362,125 @@ def compute_value_loss(vpreds, returns, values, eos_mask, cliprange_value):
     return vf_loss, vf_clipfrac
 
 
+# ============================================================================ #
+# ====================== V7: Entropy Protection Methods ====================== #
+# ============================================================================ #
+
+def compute_covariance(
+    advantages: torch.Tensor,
+    log_prob: torch.Tensor,
+    eos_mask: torch.Tensor
+) -> torch.Tensor:
+    """
+    Compute covariance between advantages and log probabilities.
+
+    Theory: Entropy change is driven by Cov(π(a), Δlogit(a))
+    - High prob + high advantage → decreases entropy (collapse)
+    - Rare + high advantage → increases entropy
+
+    Args:
+        advantages: (batch, seq_len) advantage values
+        log_prob: (batch, seq_len) log probabilities
+        eos_mask: (batch, seq_len) valid token mask
+
+    Returns:
+        cov: (batch, seq_len) covariance values per token
+    """
+    # Compute means over valid tokens
+    valid_adv = advantages * eos_mask
+    valid_log_prob = log_prob * eos_mask
+
+    # Per-sample means
+    num_valid = eos_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+    mean_adv = valid_adv.sum(dim=-1, keepdim=True) / num_valid
+    mean_log_prob = valid_log_prob.sum(dim=-1, keepdim=True) / num_valid
+
+    # Covariance: (adv - mean_adv) * (log_prob - mean_log_prob)
+    cov = (advantages - mean_adv) * (log_prob - mean_log_prob) * eos_mask
+
+    return cov
+
+
+def compute_clip_cov_mask(
+    advantages: torch.Tensor,
+    log_prob: torch.Tensor,
+    eos_mask: torch.Tensor,
+    clip_cov_lb: float = 0.0,
+    clip_cov_ub: float = 1.0
+) -> torch.Tensor:
+    """
+    Clip-Cov: Compute mask for tokens that should NOT be updated.
+
+    Tokens with covariance in [clip_cov_lb, clip_cov_ub] are masked out.
+    This prevents high-probability, high-advantage tokens from further
+    reducing entropy.
+
+    Args:
+        advantages: (batch, seq_len)
+        log_prob: (batch, seq_len)
+        eos_mask: (batch, seq_len)
+        clip_cov_lb: lower bound for clipping
+        clip_cov_ub: upper bound for clipping
+
+    Returns:
+        corr: (batch, seq_len) correction mask (0 = don't update, 1 = update)
+    """
+    cov = compute_covariance(advantages, log_prob, eos_mask)
+
+    # Tokens in [lb, ub] should not be updated
+    corr = torch.ones_like(cov)
+    corr[(cov >= clip_cov_lb) & (cov <= clip_cov_ub)] = 0.0
+
+    return corr, cov
+
+
+def compute_kl_cov_penalty(
+    advantages: torch.Tensor,
+    log_prob: torch.Tensor,
+    ref_log_prob: torch.Tensor,
+    eos_mask: torch.Tensor,
+    kl_cov_coef: float = 0.1,
+    top_k_ratio: float = 0.1
+) -> tuple:
+    """
+    KL-Cov: Add extra KL penalty on high-covariance tokens.
+
+    Args:
+        advantages: (batch, seq_len)
+        log_prob: (batch, seq_len)
+        ref_log_prob: (batch, seq_len)
+        eos_mask: (batch, seq_len)
+        kl_cov_coef: extra KL coefficient for high-cov tokens
+        top_k_ratio: ratio of tokens to penalize
+
+    Returns:
+        kl_cov_loss: scalar, extra KL loss for high-cov tokens
+        high_cov_mask: (batch, seq_len) mask of high-cov tokens
+    """
+    cov = compute_covariance(advantages, log_prob, eos_mask)
+
+    # Find top-k high covariance tokens
+    valid_cov = cov * eos_mask
+    num_valid = int(eos_mask.sum().item())
+    k = max(1, int(num_valid * top_k_ratio))
+
+    # Flatten and find threshold
+    flat_cov = valid_cov.flatten()
+    if k < flat_cov.numel():
+        threshold = torch.topk(flat_cov, k).values[-1]
+    else:
+        threshold = flat_cov.min()
+
+    # Create high-cov mask
+    high_cov_mask = (cov >= threshold) & (eos_mask > 0)
+
+    # Compute KL only on high-cov tokens
+    kl = log_prob - ref_log_prob
+    kl_cov_loss = verl_F.masked_mean(kl, high_cov_mask.float()) * kl_cov_coef
+
+    return kl_cov_loss, high_cov_mask, cov
+
+
 def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_penalty) -> torch.FloatTensor:
     """Compute KL divergence given logprob and ref_logprob.
     Copied from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1104
