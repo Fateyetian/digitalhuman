@@ -1,0 +1,41 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "conversations": {
+      "feature": {
+        "from": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "loss": {
+          "dtype": "bool",
+          "_type": "Value"
+        },
+        "value": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "item_id": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "num_steps": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "annotation_success_rate": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "task": {
+      "dtype": "string",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": ""
+}

@@ -331,6 +331,14 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
         min_samples_for_norm = int(data.meta_info.get('rebel_min_samples_for_norm', 10))
         min_std_for_norm = float(data.meta_info.get('rebel_min_std_for_norm', 0.1))
 
+        # V8: Get task adaptive weighting configuration
+        use_task_weighting = bool(data.meta_info.get('rebel_use_task_weighting', False))
+        task_success_rates = data.meta_info.get('rebel_task_success_rates', {})
+        weight_alpha = float(data.meta_info.get('rebel_weight_alpha', 2.0))
+        weight_min = float(data.meta_info.get('rebel_weight_min', 0.3))
+        weight_max = float(data.meta_info.get('rebel_weight_max', 3.0))
+        weight_baseline_sr = float(data.meta_info.get('rebel_weight_baseline_sr', 0.85))
+
         # V2: Get task_types from non_tensor_batch (added by env_manager)
         task_types = data.non_tensor_batch.get('task_type', None)
         if task_aware and task_types is None:
@@ -356,7 +364,14 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
             # V5 parameters
             conditional_norm=conditional_norm,
             min_samples_for_norm=min_samples_for_norm,
-            min_std_for_norm=min_std_for_norm
+            min_std_for_norm=min_std_for_norm,
+            # V8 parameters: task adaptive weighting
+            task_success_rates=task_success_rates,
+            use_task_weighting=use_task_weighting,
+            weight_alpha=weight_alpha,
+            weight_min=weight_min,
+            weight_max=weight_max,
+            weight_baseline_sr=weight_baseline_sr
         )
 
         data.batch['advantages'] = advantages
@@ -417,6 +432,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
             for task, std_adv in per_task_adv_stds.items():
                 task_short = task.replace('pick_', '').replace('_then_place_in_recep', '').replace('_obj', '')
                 data.meta_info[f'rebel/adv_std_{task_short}'] = std_adv
+
+        # V8: Log task adaptive weighting metrics
+        for key in adv_details:
+            if key.startswith('rebel/task_weight_') or key.startswith('rebel/use_task_weighting'):
+                data.meta_info[key] = adv_details[key]
     else:
         raise NotImplementedError
     return data
@@ -480,6 +500,10 @@ class RayPPOTrainer(object):
             'epochs': []
         }
         self.task_distribution_file = None  # 在fit()中初始化
+
+        # V8新增: 任务成功率跟踪 (用于任务自适应权重)
+        self.task_success_rates = {}  # {task_name: success_rate}
+        self.v8_task_weighting_warmup = config.algorithm.rebel.get('task_weighting_warmup_epochs', 20)  # 前N个epoch不启用
 
         # define in-reward KL control
         # kl loss control currently not suppoorted
@@ -857,6 +881,17 @@ class RayPPOTrainer(object):
                 phase='val',
                 epoch=self.global_steps
             )
+
+        # V8新增: 从success_rate更新任务成功率 (用于任务自适应权重)
+        for k, v in success_rate.items():
+            if '_success_rate' in k:
+                # 从key中提取任务类型名，例如 'pick_and_place_success_rate' -> 'pick_and_place'
+                task_name = k.replace('_success_rate', '')
+                self.task_success_rates[task_name] = v
+
+        # V8: 打印任务成功率更新日志
+        if self.task_success_rates:
+            print(f"[V8] Task success rates updated: {self.task_success_rates}")
 
         return metric_dict
 
@@ -1328,6 +1363,17 @@ class RayPPOTrainer(object):
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
                         # compute advantages, executed on the driver process
+                        # V8: 动态更新任务成功率到meta_info (用于任务自适应权重)
+                        if self.config.algorithm.adv_estimator == AdvantageEstimator.ReBel:
+                            # 检查是否已过warmup期
+                            use_weighting = bool(getattr(self.config.algorithm.rebel, 'use_task_weighting', False))
+                            warmup_epochs = int(getattr(self.config.algorithm.rebel, 'task_weighting_warmup_epochs', 20))
+                            if use_weighting and epoch >= warmup_epochs and self.task_success_rates:
+                                batch.meta_info['rebel_task_success_rates'] = self.task_success_rates
+                                print(f"[V8] Applying task weights with success rates: {self.task_success_rates}")
+                            else:
+                                batch.meta_info['rebel_task_success_rates'] = {}
+
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,

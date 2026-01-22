@@ -1,0 +1,46 @@
+{
+  "baseline": {
+    "total_steps": 31,
+    "final_train_sr": 58.199999999999996,
+    "final_val_sr": 43.8,
+    "final_reward": 7.063,
+    "final_valid_ratio": 94.1,
+    "final_episode_length": 19.809,
+    "final_kl": 0.001,
+    "best_val_sr": 56.2,
+    "best_val_step": 20
+  },
+  "step_adv_0.5": {
+    "total_steps": 31,
+    "final_train_sr": 52.7,
+    "final_val_sr": 62.5,
+    "final_reward": 6.616,
+    "final_valid_ratio": 92.7,
+    "final_episode_length": 21.758,
+    "final_kl": 0.001,
+    "best_val_sr": 62.5,
+    "best_val_step": 30
+  },
+  "step_adv_2.0": {
+    "total_steps": 31,
+    "final_train_sr": 61.3,
+    "final_val_sr": 43.8,
+    "final_reward": 7.368,
+    "final_valid_ratio": 92.5,
+    "final_episode_length": 19.609,
+    "final_kl": 0.001,
+    "best_val_sr": 56.2,
+    "best_val_step": 25
+  },
+  "step_adv_0.5_val128": {
+    "total_steps": 80,
+    "final_train_sr": 88.7,
+    "final_val_sr": 69.5,
+    "final_reward": 9.726,
+    "final_valid_ratio": 97.7,
+    "final_episode_length": 13.039,
+    "final_kl": 0.0,
+    "best_val_sr": 70.3,
+    "best_val_step": 70
+  }
+}

@@ -119,7 +119,8 @@ class GroundTruthTracker:
     """Track ground truth state from observation history"""
 
     def __init__(self):
-        self.visited_locations = set()
+        self.visible_receptacles = set()  # receptacles we can see (world knowledge)
+        self.visited_locations = set()    # receptacles we have actually explored/interacted with
         self.object_locations = {}  # object -> location
         self.object_states = {}     # object -> state (open/closed/clean/dirty/hot/cold)
         self.cleared_receptacles = set()  # receptacles that were checked and found empty/irrelevant
@@ -132,20 +133,24 @@ class GroundTruthTracker:
         """Update ground truth from observation text"""
         obs_lower = obs.lower()
 
-        # Extract current location
+        # Extract visible receptacles from initial room description
+        # These are "seen" but not yet "visited/explored"
         loc_match = re.search(r'you are in the middle of a room\. looking quickly around you, you see (.*?)\.', obs_lower)
         if loc_match:
             location_desc = loc_match.group(1)
-            # Extract receptacles as locations
-            receptacles = re.findall(r'((?:a |an )?[\w\s]+\d+)', location_desc)
+            # Preprocess: remove ", and " to handle last item (e.g., "..., and a drawer 2")
+            location_desc = location_desc.replace(', and ', ', ')
+            # Extract receptacles without article (a/an)
+            # Pattern captures only the object name + number (e.g., "drawer 1" from "a drawer 1")
+            receptacles = re.findall(r'(?:a |an )([\w\s]+\d+)', location_desc)
             for recep in receptacles:
-                self.visited_locations.add(recep.strip())
+                self.visible_receptacles.add(recep.strip())
 
-        # Extract location from "You are facing ..."
+        # "You are facing X" - this is visible but not visited
         facing_match = re.search(r'you are facing (.*?)\.', obs_lower)
         if facing_match:
             facing = facing_match.group(1).strip()
-            self.visited_locations.add(facing)
+            self.visible_receptacles.add(facing)
 
         # Track what's currently in agent's inventory
         # Pattern: "You pick up X from Y" or "You are carrying X"
@@ -163,32 +168,42 @@ class GroundTruthTracker:
 
         # Extract object locations from observations
         # Pattern: "On the X, you see Y" or "On the X, you see nothing"
+        # This means we actually examined/visited this receptacle
         on_matches = re.findall(r'on the ([\w\s]+\d+), you see (.*?)\.', obs_lower)
         for location, items_str in on_matches:
             location = location.strip()
-            self.visited_locations.add(location)
+            self.visited_locations.add(location)  # Actually visited/examined
+            self.visible_receptacles.add(location)  # Also visible
 
             if 'nothing' in items_str:
                 # This receptacle is empty
                 self.cleared_receptacles.add(location)
             else:
-                items = re.findall(r'((?:a |an )?[\w\s]+\d+)', items_str)
+                # Preprocess: remove "and" connector
+                items_str = items_str.replace(', and ', ', ').replace(' and ', ', ')
+                # Extract items without article (a/an)
+                items = re.findall(r'(?:a |an )([\w\s]+\d+)', items_str)
                 for item in items:
                     item = item.strip()
                     if item:
                         self.object_locations[item] = f"on {location}"
 
         # Pattern: "In the X, you see Y" or "In the X, you see nothing"
+        # This means we actually opened and examined this receptacle
         in_matches = re.findall(r'in the ([\w\s]+\d+), you see (.*?)\.', obs_lower)
         for location, items_str in in_matches:
             location = location.strip()
-            self.visited_locations.add(location)
+            self.visited_locations.add(location)  # Actually visited/examined
+            self.visible_receptacles.add(location)  # Also visible
 
             if 'nothing' in items_str:
                 # This receptacle is empty
                 self.cleared_receptacles.add(location)
             else:
-                items = re.findall(r'((?:a |an )?[\w\s]+\d+)', items_str)
+                # Preprocess: remove "and" connector
+                items_str = items_str.replace(', and ', ', ').replace(' and ', ', ')
+                # Extract items without article (a/an)
+                items = re.findall(r'(?:a |an )([\w\s]+\d+)', items_str)
                 for item in items:
                     item = item.strip()
                     if item:
@@ -200,9 +215,10 @@ class GroundTruthTracker:
         for obj, state in state_matches:
             obj = obj.strip()
             self.object_states[obj] = state
-            # If we opened something, mark it as visited
+            # If we opened something, mark it as visited and visible
             if state == 'open':
                 self.visited_locations.add(obj)
+                self.visible_receptacles.add(obj)
 
         # Pattern: "You heat X using Y"
         heat_match = re.search(r'you heat ([\w\s]+\d+)', obs_lower)
@@ -235,7 +251,8 @@ class GroundTruthTracker:
     def get_ground_truth_state(self) -> Dict[str, Any]:
         """Return current ground truth state"""
         return {
-            'visited': list(self.visited_locations),
+            'visible_receptacles': list(self.visible_receptacles),  # What we can see (world knowledge)
+            'visited': list(self.visited_locations),  # What we've actually explored
             'object_locations': dict(self.object_locations),
             'object_states': dict(self.object_states),
             'cleared_receptacles': list(self.cleared_receptacles),
@@ -248,18 +265,20 @@ class GroundTruthTracker:
 class RebelRewardCalculator:
     """Calculate three intrinsic rewards for ReBel framework"""
 
-    def __init__(self, alpha=0.3, beta=0.5, gamma=0.2, delta=0.1):
+    def __init__(self, alpha=0.3, beta=0.5, gamma=0.2, delta=0.1, use_belief_reward=True):
         """
         Args:
             alpha: Weight for consistency reward (environment alignment)
             beta: Weight for progress reward (task understanding)
             gamma: Weight for exploration reward (exploration efficiency)
             delta: Weight for format validity reward (output format compliance)
+            use_belief_reward: Whether to use belief-based intrinsic rewards (for ablation studies)
         """
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
         self.delta = delta
+        self.use_belief_reward = use_belief_reward
 
         # Hyperparameters for reward calculation
         self.consistency_scale = 0.1  # Scale to match task reward magnitude
@@ -877,6 +896,13 @@ class RebelRewardCalculator:
         r_exploration = self.calculate_exploration_reward(exploration_map, ground_truth, step)
         r_format = self.calculate_format_reward(is_format_valid, is_action_available)
 
+        # V8 Ablation: Support disabling belief rewards
+        if not self.use_belief_reward:
+            # Ablation: Only use format reward (no belief-based intrinsic rewards)
+            r_consistency = 0.0
+            r_progress = 0.0
+            r_exploration = 0.0
+
         # Weighted combination
         total_reward = (
             self.alpha * r_consistency +
@@ -1045,6 +1071,14 @@ class BeliefDeviationCalculator:
         Returns:
             Dict with precision, recall, f1, and deviation score
         """
+        # Handle case where belief_exploration is not a dict
+        if not isinstance(belief_exploration, dict):
+            if isinstance(belief_exploration, list):
+                # If it's a list, treat it as newly_visited
+                belief_exploration = {'newly_visited': belief_exploration}
+            else:
+                belief_exploration = {}
+
         predicted_visited = belief_exploration.get('newly_visited', []) or []
         if isinstance(predicted_visited, str):
             predicted_visited = [predicted_visited] if predicted_visited else []
@@ -1126,7 +1160,11 @@ class BeliefDeviationCalculator:
             }
 
         world_model = belief_state.get('world_model_update', {}) or {}
+        if not isinstance(world_model, dict):
+            world_model = {}
         exploration_map = belief_state.get('exploration_map_update', {}) or {}
+        if not isinstance(exploration_map, dict):
+            exploration_map = {}
 
         # Compute component deviations
         obj_loc_metrics = BeliefDeviationCalculator.compute_object_location_deviation(

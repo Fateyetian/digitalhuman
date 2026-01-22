@@ -64,18 +64,32 @@ class TrajectoryCollector:
 
         _obs_anchor = torch_to_numpy(obs_anchor, is_object=True) if isinstance(obs_anchor, torch.Tensor) else obs_anchor
 
-        # Build chat structure
+        # Build chat structure with system prompt
         obs_content = raw_prompt[0]['content']
-        if '<image>' in obs_content: 
+        if '<image>' in obs_content:
             obs_content = obs_content.replace('<image>', '')
 
         if obs_text is not None:
             obs_content += obs_text
-        
-        chat = np.array([{
-            "content": obs_content,
-            "role": "user",
-        }])
+
+        # ALFWorld system prompt - task-relevant context
+        system_prompt = (
+            "You are an expert embodied agent operating in the ALFRED environment. "
+            "Your goal is to complete household tasks by navigating, interacting with objects, "
+            "and maintaining accurate beliefs about the world state. "
+            "Always output your response in the required format with <belief>, <reasoning>, and <action> tags."
+        )
+
+        chat = np.array([
+            {
+                "content": system_prompt,
+                "role": "system",
+            },
+            {
+                "content": obs_content,
+                "role": "user",
+            }
+        ])
 
         # Apply chat template
         prompt_with_chat_template = self.tokenizer.apply_chat_template(
@@ -814,6 +828,14 @@ class TrajectoryCollector:
             gen_batch_output.meta_info["rebel_conditional_norm"] = bool(getattr(self.config.algorithm.rebel, 'conditional_norm', True))
             gen_batch_output.meta_info["rebel_min_samples_for_norm"] = int(getattr(self.config.algorithm.rebel, 'min_samples_for_norm', 10))
             gen_batch_output.meta_info["rebel_min_std_for_norm"] = float(getattr(self.config.algorithm.rebel, 'min_std_for_norm', 0.1))
+            # V8: Task adaptive weighting configuration
+            gen_batch_output.meta_info["rebel_use_task_weighting"] = bool(getattr(self.config.algorithm.rebel, 'use_task_weighting', False))
+            gen_batch_output.meta_info["rebel_weight_alpha"] = float(getattr(self.config.algorithm.rebel, 'weight_alpha', 2.0))
+            gen_batch_output.meta_info["rebel_weight_min"] = float(getattr(self.config.algorithm.rebel, 'weight_min', 0.3))
+            gen_batch_output.meta_info["rebel_weight_max"] = float(getattr(self.config.algorithm.rebel, 'weight_max', 3.0))
+            gen_batch_output.meta_info["rebel_weight_baseline_sr"] = float(getattr(self.config.algorithm.rebel, 'weight_baseline_sr', 0.85))
+            # V8: task_success_rates 将在 ray_trainer.py 中动态更新
+            gen_batch_output.meta_info["rebel_task_success_rates"] = {}
             # 传递ReBel统计信息
             if 'meta_info_rebel' in locals():
                 gen_batch_output.meta_info['rebel_stats'] = meta_info_rebel

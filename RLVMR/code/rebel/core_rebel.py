@@ -512,7 +512,14 @@ def compute_rebel_advantage(
     conditional_norm: bool = True,
     min_samples_for_norm: int = 10,
     min_std_for_norm: float = 0.1,
-    min_samples_ratio: float = 0.0  # V6新增: 相对阈值
+    min_samples_ratio: float = 0.0,  # V6新增: 相对阈值
+    # V8新增: 任务自适应权重参数
+    task_success_rates: Optional[Dict[str, float]] = None,
+    use_task_weighting: bool = False,
+    weight_alpha: float = 2.0,
+    weight_min: float = 0.3,
+    weight_max: float = 3.0,
+    weight_baseline_sr: float = 0.85
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
     """
     ReBel优势计算主函数
@@ -541,6 +548,12 @@ def compute_rebel_advantage(
         conditional_norm: 是否启用条件归一化 (V5新增，保护小样本任务)
         min_samples_for_norm: 条件归一化的最小样本数阈值 (V5新增)
         min_std_for_norm: 条件归一化的最小标准差阈值 (V5新增)
+        task_success_rates: V8新增，各任务当前成功率 (用于任务自适应权重)
+        use_task_weighting: V8新增，是否启用任务自适应权重
+        weight_alpha: V8新增，权重调节指数
+        weight_min: V8新增，最小权重
+        weight_max: V8新增，最大权重
+        weight_baseline_sr: V8新增，基线成功率
 
     Returns:
         advantages: (batch, seq_len) 总优势
@@ -568,14 +581,22 @@ def compute_rebel_advantage(
     # 4. 组合
     total_advantages = episode_advantages + step_advantage_w * step_advantages
 
-    # 5. V2新增: 按任务归一化 (可选), V5改进: 条件归一化, V6改进: 相对阈值
+    # 5. V2新增: 按任务归一化 (可选), V5改进: 条件归一化, V6改进: 相对阈值, V8改进: 任务自适应权重
+    task_weights_applied = {}
     if per_task_normalization and task_types is not None:
-        total_advantages = normalize_advantages_per_task(
+        total_advantages, task_weights_applied = normalize_advantages_per_task(
             total_advantages, task_types, eos_mask, epsilon,
             min_samples_for_norm=min_samples_for_norm,
             min_std_for_norm=min_std_for_norm,
             use_conditional_norm=conditional_norm,
-            min_samples_ratio=min_samples_ratio  # V6新增
+            min_samples_ratio=min_samples_ratio,  # V6新增
+            # V8新增: 任务自适应权重参数
+            task_success_rates=task_success_rates,
+            use_task_weighting=use_task_weighting,
+            weight_alpha=weight_alpha,
+            weight_min=weight_min,
+            weight_max=weight_max,
+            weight_baseline_sr=weight_baseline_sr
         )
 
     # 6. 统计信息 (用于SwanLab/WandB logging)
@@ -605,6 +626,10 @@ def compute_rebel_advantage(
         'rebel/min_samples_for_norm': min_samples_for_norm,
         'rebel/min_std_for_norm': min_std_for_norm,
         'rebel/min_samples_ratio': min_samples_ratio,  # V6新增
+        # V8新增: 任务自适应权重
+        'rebel/use_task_weighting': int(use_task_weighting),
+        'rebel/weight_alpha': weight_alpha,
+        'rebel/weight_baseline_sr': weight_baseline_sr,
     }
 
     # 添加每个任务类型的组数 (如果启用任务感知)
@@ -613,7 +638,20 @@ def compute_rebel_advantage(
             if task != "all":
                 adv_details[f'rebel/num_groups_{task}'] = count
 
+    # V8新增: 记录每个任务的实际权重
+    if task_weights_applied:
+        for task, weight in task_weights_applied.items():
+            task_short = task.replace('pick_', '').replace('_then_place_in_recep', '').replace('_obj', '').replace('_in_light', '')
+            adv_details[f'rebel/task_weight_{task_short}'] = weight
+
     if summarize:
+        task_weight_info = ""
+        if task_weights_applied:
+            task_weight_info = "\n├─ Task Weights (V8):"
+            for task, weight in sorted(task_weights_applied.items()):
+                task_short = task.replace('pick_', '').replace('_then_place_in_recep', '').replace('_obj', '').replace('_in_light', '')
+                task_weight_info += f"\n│  └─ {task_short}: {weight:.2f}x"
+
         print(f"""
 ReBel Advantage Statistics:
 ├─ Episode Adv Mean: {adv_details['episode_adv_mean']:.4f}
@@ -623,10 +661,65 @@ ReBel Advantage Statistics:
 ├─ Total Adv Mean: {adv_details['total_adv_mean']:.4f}
 ├─ Total Adv Std: {adv_details['total_adv_std']:.4f}
 ├─ Task-Aware: {task_aware}
-└─ Per-Task Norm: {per_task_normalization}
+├─ Per-Task Norm: {per_task_normalization}
+└─ Task Weighting (V8): {use_task_weighting}{task_weight_info}
 """)
 
     return total_advantages, total_advantages, adv_details
+
+
+# ============================================================================ #
+# ====================== V8: Task Adaptive Weighting ========================= #
+# ============================================================================ #
+
+def compute_task_adaptive_weights(
+    task_success_rates: Dict[str, float],
+    alpha: float = 2.0,
+    min_weight: float = 0.3,
+    max_weight: float = 3.0,
+    baseline_sr: float = 0.85
+) -> Dict[str, float]:
+    """
+    V8新增: 根据任务成功率计算自适应权重
+
+    原理: 低成功率任务获得更高权重，增强其梯度贡献
+
+    公式:
+        weight(task) = clip(((1 - sr) / (1 - baseline_sr))^alpha, min_weight, max_weight)
+
+    示例 (alpha=2.0, baseline_sr=0.85):
+        pick_and_place: sr=97.8% → weight = ((1-0.978)/(1-0.85))^2 = 0.02 → clip to 0.3
+        look_at:        sr=67.6% → weight = ((1-0.676)/(1-0.85))^2 = 4.68 → clip to 3.0
+
+    Args:
+        task_success_rates: {task_name: success_rate} 各任务当前成功率
+        alpha: 权重调节指数，越大权重差异越明显
+        min_weight: 最小权重（防止完全忽略高性能任务）
+        max_weight: 最大权重（防止过度偏向单一任务）
+        baseline_sr: 基线成功率，低于此值的任务获得更高权重
+
+    Returns:
+        task_weights: {task_name: weight} 各任务的梯度缩放权重
+    """
+    if not task_success_rates:
+        return {}
+
+    weights = {}
+    denominator = 1.0 - baseline_sr
+
+    for task, sr in task_success_rates.items():
+        if denominator <= 0:
+            denominator = 0.15  # 防止除零
+
+        # 计算原始权重: 成功率越低，权重越高
+        numerator = 1.0 - sr
+        raw_weight = (numerator / denominator) ** alpha
+
+        # 应用边界限制
+        weight = max(min_weight, min(max_weight, raw_weight))
+        weights[task] = weight
+
+    return weights
 
 
 def normalize_advantages_per_task(
@@ -637,21 +730,27 @@ def normalize_advantages_per_task(
     min_samples_for_norm: int = 10,
     min_std_for_norm: float = 0.1,
     use_conditional_norm: bool = True,
-    min_samples_ratio: float = 0.0  # V6新增: 相对阈值 (0表示不使用)
-) -> torch.Tensor:
+    min_samples_ratio: float = 0.0,  # V6新增: 相对阈值 (0表示不使用)
+    # V8新增: 任务自适应权重参数
+    task_success_rates: Optional[Dict[str, float]] = None,
+    use_task_weighting: bool = False,
+    weight_alpha: float = 2.0,
+    weight_min: float = 0.3,
+    weight_max: float = 3.0,
+    weight_baseline_sr: float = 0.85
+) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
-    V6改进: 条件归一化 - 保护小样本任务
+    V8改进: 条件归一化 + 任务自适应权重
 
-    策略:
+    V6策略 (保留):
     1. 样本数 >= min_samples_for_norm 且 std >= min_std_for_norm: 标准归一化 (mean=0, std=1)
     2. 样本数 >= min_samples_for_norm 但 std < min_std_for_norm: 保守归一化 (仅去均值)
     3. 样本数 < min_samples_for_norm: 使用全局统计量归一化
 
-    V6新增: 相对阈值支持
-    - 如果 min_samples_ratio > 0，使用相对阈值判断小样本任务
-    - 例如 min_samples_ratio=0.15 表示样本占比 < 15% 的任务使用保护归一化
-
-    这避免了对look_at_obj_in_light等小样本任务的噪声放大问题
+    V8新增: 任务自适应权重
+    - 根据任务成功率计算梯度缩放权重
+    - 低成功率任务(如look_at)获得更高权重，增强梯度贡献
+    - 高成功率任务(如pick_and_place)降低权重，避免过拟合
 
     Args:
         advantages: (batch, seq_len) 原始优势
@@ -662,13 +761,33 @@ def normalize_advantages_per_task(
         min_std_for_norm: 最小标准差阈值
         use_conditional_norm: 是否启用条件归一化
         min_samples_ratio: V6新增，相对阈值 (0表示不使用)
+        task_success_rates: V8新增，各任务当前成功率
+        use_task_weighting: V8新增，是否启用任务权重
+        weight_alpha: V8新增，权重调节指数
+        weight_min: V8新增，最小权重
+        weight_max: V8新增，最大权重
+        weight_baseline_sr: V8新增，基线成功率
 
     Returns:
         normalized: (batch, seq_len) 归一化后的优势
+        task_weights: V8新增，各任务的实际缩放权重 (用于logging)
     """
     result = advantages.clone()
     unique_tasks = np.unique(task_types)
     total_samples = len(task_types)
+    applied_task_weights = {}  # V8: 记录实际应用的权重
+
+    # V8: 计算任务自适应权重
+    if use_task_weighting and task_success_rates:
+        task_weights = compute_task_adaptive_weights(
+            task_success_rates=task_success_rates,
+            alpha=weight_alpha,
+            min_weight=weight_min,
+            max_weight=weight_max,
+            baseline_sr=weight_baseline_sr
+        )
+    else:
+        task_weights = {}
 
     # 计算全局统计量 (用于小样本任务的后备归一化)
     all_valid_mask = eos_mask > 0
@@ -746,7 +865,15 @@ def normalize_advantages_per_task(
                     normalized_adv = (task_adv - mean) / (std + epsilon)
                     result[mask] = normalized_adv * task_eos
 
-    return result
+            # V8: 应用任务自适应权重
+            if task_weights and task in task_weights:
+                weight = task_weights[task]
+                result[mask] = result[mask] * weight
+                applied_task_weights[task] = weight
+            else:
+                applied_task_weights[task] = 1.0
+
+    return result, applied_task_weights
 
 
 # ============================================================================ #

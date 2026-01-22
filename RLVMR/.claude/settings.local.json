@@ -3,7 +3,24 @@
     "allow": [
       "Bash(python:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nFeat: Optimize BDRS prompts and enhance cold start data generation\n\nMajor improvements to BDRS framework prompts and cold start data generation pipeline:\n\n1. BDRS Prompt Optimization (alfworld.py, cold_start.py):\n   - Enhanced BDRS runtime prompts from ~360 chars to ~1,375 chars\n   - Added structured belief module examples (M_t, P_t, E_t)\n   - Added mode-action alignment guidelines\n   - Added explicit output format requirements\n   - Added concrete usage examples\n   - Improved mode selection guidance to reduce ambiguity\n\n2. Cold Start Data Generation Enhancement (alfworld_prepare.py):\n   - Added comprehensive CLI argument parsing (--api_key, --model, --num_trajs, --output_path, --resume)\n   - Added multi-source API key configuration (CLI > env var > default)\n   - Added API key validation with helpful error messages\n   - Implemented resume/checkpoint functionality for interrupted runs\n   - Added automatic progress saving to prevent data loss\n   - Enhanced annotation prompt with hindsight bias prevention guidelines\n   - Added belief context requirement in reasoning annotations\n   - Added comprehensive data quality reporting:\n     * Mode distribution analysis (PLAN/EXECUTE/EXPLORE/VERIFY)\n     * Trajectory length statistics\n     * Task type coverage check\n     * Format error detection\n     * Quality assessment with actionable suggestions\n\n3. Documentation:\n   - Added BDRS_COLD_START_PLAN_C.md: Complete implementation guide for full optimization\n   - Added QUICK_START_COLD_START.md: Step-by-step quick start guide for Plan A\n\nExpected improvements:\n- Cold start model success rate: 15-25% (baseline 10-15%)\n- Better mode distribution balance\n- Higher quality belief-driven reasoning annotations\n- More robust data generation with resume capability\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nFeat: Optimize BDRS prompts and enhance cold start data generation\n\nMajor improvements to BDRS framework prompts and cold start data generation pipeline:\n\n1. BDRS Prompt Optimization (alfworld.py, cold_start.py):\n   - Enhanced BDRS runtime prompts from ~360 chars to ~1,375 chars\n   - Added structured belief module examples (M_t, P_t, E_t)\n   - Added mode-action alignment guidelines\n   - Added explicit output format requirements\n   - Added concrete usage examples\n   - Improved mode selection guidance to reduce ambiguity\n\n2. Cold Start Data Generation Enhancement (alfworld_prepare.py):\n   - Added comprehensive CLI argument parsing (--api_key, --model, --num_trajs, --output_path, --resume)\n   - Added multi-source API key configuration (CLI > env var > default)\n   - Added API key validation with helpful error messages\n   - Implemented resume/checkpoint functionality for interrupted runs\n   - Added automatic progress saving to prevent data loss\n   - Enhanced annotation prompt with hindsight bias prevention guidelines\n   - Added belief context requirement in reasoning annotations\n   - Added comprehensive data quality reporting:\n     * Mode distribution analysis (PLAN/EXECUTE/EXPLORE/VERIFY)\n     * Trajectory length statistics\n     * Task type coverage check\n     * Format error detection\n     * Quality assessment with actionable suggestions\n\n3. Documentation:\n   - Added BDRS_COLD_START_PLAN_C.md: Complete implementation guide for full optimization\n   - Added QUICK_START_COLD_START.md: Step-by-step quick start guide for Plan A\n\nExpected improvements:\n- Cold start model success rate: 15-25% (baseline 10-15%)\n- Better mode distribution balance\n- Higher quality belief-driven reasoning annotations\n- More robust data generation with resume capability\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(chmod:*)",
+      "Bash(curl:*)",
+      "Bash(bash:*)",
+      "Bash(pkill:*)",
+      "Bash(python3:*)",
+      "Bash(tee:*)",
+      "Bash(ls:*)",
+      "Bash(for i in {1..40})",
+      "Bash(do if curl -s http://localhost:8000/health)",
+      "Bash(then echo '✅ vLLM基础模型已启动')",
+      "Bash(exit 0)",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(for i in {1..60})",
+      "Bash(nvidia-smi:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []
