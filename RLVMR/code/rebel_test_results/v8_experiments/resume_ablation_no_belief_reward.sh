@@ -1,9 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# ReBel V8 消融实验: 移除信念奖励 (No Belief Reward)
+# ReBel V8 消融实验: 移除信念奖励 - 断点续训脚本
 # =============================================================================
-# 目的: 验证信念奖励对性能的影响
-# 配置: 只使用结果奖励，不使用信念奖励
+# 目的: 从中断的 checkpoint 继续训练
+# 继续自: global_step_50 (已完成 epoch 50)
 # =============================================================================
 
 set -e
@@ -16,6 +16,22 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
+# 清理残留的 ray 进程
+echo "正在清理残留进程..."
+ray stop --force 2>/dev/null || true
+pkill -f "ray::" 2>/dev/null || true
+sleep 3
+
+# 中断的实验目录 (已有 checkpoint)
+RESUME_DIR="/fs-computility-new/UPDZ03_chengjun/huangsijie.p/rebel_results/v8_experiments/ablation_no_belief_reward_seed42_20260122_150758"
+CHECKPOINT_DIR="${RESUME_DIR}/checkpoints"
+
+# 验证 checkpoint 存在
+if [ ! -d "${CHECKPOINT_DIR}/global_step_50" ]; then
+    echo "错误: Checkpoint 不存在: ${CHECKPOINT_DIR}/global_step_50"
+    exit 1
+fi
+
 # 动态查找SFT模型路径
 find_sft_model() {
     local path=$(ls -d /root/testttt/RLVMR/code/checkpoints/cold_start/alfworld/rebel_full_*/global_step_* 2>/dev/null | sort -V | tail -1)
@@ -26,13 +42,8 @@ find_sft_model() {
 }
 
 SFT_MODEL_PATH=$(find_sft_model)
-RESULTS_BASE="/fs-computility-new/UPDZ03_chengjun/huangsijie.p/rebel_results/v8_experiments"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-# 实验配置
+RESULTS_DIR="${RESUME_DIR}"
 EXP_NAME="ablation_no_belief_reward_seed${SEED}"
-RESULTS_DIR="${RESULTS_BASE}/${EXP_NAME}_${TIMESTAMP}"
-mkdir -p "${RESULTS_DIR}/checkpoints"
 
 # V8配置
 CLIP_RATIO_LOW=0.2
@@ -55,7 +66,7 @@ WEIGHT_MAX=3.0
 WARMUP_EPOCHS=20
 
 echo "═══════════════════════════════════════════════════════════════════"
-echo "  ReBel V8 消融实验: 移除信念奖励"
+echo "  ReBel V8 消融实验: 断点续训 - 移除信念奖励"
 echo "═══════════════════════════════════════════════════════════════════"
 echo ""
 echo "配置:"
@@ -63,6 +74,7 @@ echo "  - 实验名称: ${EXP_NAME}"
 echo "  - 随机种子: ${SEED}"
 echo "  - GPU数量: ${NUM_GPUS}"
 echo "  - Epochs: ${EPOCHS}"
+echo "  - 从 checkpoint 继续: ${CHECKPOINT_DIR}/global_step_50"
 echo "  - 结果奖励: 启用"
 echo "  - 信念奖励: 禁用"
 echo "  - 结果目录: ${RESULTS_DIR}"
@@ -79,7 +91,7 @@ if [ ! -f "$HOME/data/verl-agent/text/train.parquet" ]; then
         --val_data_size 128 2>/dev/null || true
 fi
 
-# 运行训练 - 移除信念奖励
+# 运行训练 - 从 checkpoint 恢复
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=rebel \
     algorithm.rebel.enable=True \
@@ -132,7 +144,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -156,19 +168,20 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger="['console','swanlab']" \
     trainer.project_name='ReBel_V8_Ablation' \
-    trainer.experiment_name="${EXP_NAME}" \
+    trainer.experiment_name="${EXP_NAME}_resumed" \
     trainer.n_gpus_per_node=${NUM_GPUS} \
     trainer.nnodes=1 \
     trainer.save_freq=50 \
     trainer.test_freq=5 \
     trainer.total_epochs=${EPOCHS} \
-    trainer.default_local_dir="${RESULTS_DIR}/checkpoints" \
-    trainer.val_before_train=True \
-    2>&1 | tee "${RESULTS_DIR}/training.log"
+    trainer.default_local_dir="${CHECKPOINT_DIR}" \
+    trainer.resume_mode=auto \
+    trainer.val_before_train=False \
+    2>&1 | tee -a "${RESULTS_DIR}/training_resumed.log"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════════"
-echo "  消融实验完成: 移除信念奖励"
+echo "  断点续训完成: 移除信念奖励"
 echo "═══════════════════════════════════════════════════════════════════"
 echo ""
 echo "结果保存在: ${RESULTS_DIR}"
