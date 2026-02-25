@@ -1,12 +1,11 @@
 """
-ReBel (Reward Belief) Framework
+ReBel (Reinforcement Learning with Belief-State Enhancement)
 
-严格按照 ReBel_RL_Algorithm_Guide.md 实现的RL算法
-
-核心创新:
-1. Belief-based Grouping: 按(uid, belief_hash)分组，粒度适中(20-100组)
-2. 4组件内在奖励: Consistency + Progress + Exploration (Format是独立惩罚)
-3. 双层优势: A_total = A_episode + λ × A_step
+Core innovations:
+1. HiBO (Hierarchical Belief-Observation Grouping): obs hash primary + belief abstract fallback
+2. Competence-Adaptive Belief Reward Curriculum: SR-based decay + differential component decay
+3. Structured Belief Prompting: cognitive scaffolding + HiBO signal + reward basis
+4. Dual-layer advantage: A_total = A_episode + λ × A_step
 """
 
 from .core_rebel import (
@@ -31,6 +30,16 @@ from .core_rebel import (
     health_check,
 )
 
+from .hibo_grouping import (
+    # V11: HiBO grouping
+    semantic_belief_abstract,
+    classify_stage,
+    bucket_exploration,
+    build_hibo_groups,
+    hibo_step_norm_reward,
+    compute_hibo_outcome_advantage,
+)
+
 __all__ = [
     # Main API
     'compute_rebel_advantage',
@@ -40,6 +49,14 @@ __all__ = [
     # Belief grouping
     'build_belief_group',
     'canonicalize_belief',
+
+    # HiBO (V11)
+    'semantic_belief_abstract',
+    'classify_stage',
+    'bucket_exploration',
+    'build_hibo_groups',
+    'hibo_step_norm_reward',
+    'compute_hibo_outcome_advantage',
 
     # Intrinsic rewards
     'consistency_reward',

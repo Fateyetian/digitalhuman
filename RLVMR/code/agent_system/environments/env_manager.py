@@ -84,12 +84,43 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
             use_belief_reward = getattr(config.algorithm.rebel, 'use_belief_reward', True)
             use_result_reward = getattr(config.algorithm.rebel, 'use_result_reward', True)
 
+            # V9: Read belief reward decay parameters
+            belief_reward_decay_config = getattr(config.algorithm.rebel, 'belief_reward_decay', None)
+            if belief_reward_decay_config is not None:
+                belief_reward_decay_enable = getattr(belief_reward_decay_config, 'enable', False)
+                belief_reward_decay_method = getattr(belief_reward_decay_config, 'method', 'cosine')
+                belief_reward_warmup_epochs = getattr(belief_reward_decay_config, 'warmup_epochs', 5)
+                belief_reward_decay_start_epoch = getattr(belief_reward_decay_config, 'decay_start_epoch', 10)
+                belief_reward_decay_end_epoch = getattr(belief_reward_decay_config, 'decay_end_epoch', 60)
+                belief_reward_min_weight = getattr(belief_reward_decay_config, 'min_weight', 0.1)
+            else:
+                belief_reward_decay_enable = False
+                belief_reward_decay_method = 'cosine'
+                belief_reward_warmup_epochs = 5
+                belief_reward_decay_start_epoch = 10
+                belief_reward_decay_end_epoch = 60
+                belief_reward_min_weight = 0.1
+
             self.reward_calculator = RebelRewardCalculator(
                 alpha=getattr(config.algorithm.rebel, 'alpha', 0.3),
                 beta=getattr(config.algorithm.rebel, 'beta', 0.5),
                 gamma=getattr(config.algorithm.rebel, 'gamma', 0.2),
                 delta=getattr(config.algorithm.rebel, 'delta', 0.1),
-                use_belief_reward=use_belief_reward
+                use_belief_reward=use_belief_reward,
+                belief_reward_decay_enable=belief_reward_decay_enable,
+                belief_reward_decay_method=belief_reward_decay_method,
+                belief_reward_warmup_epochs=belief_reward_warmup_epochs,
+                belief_reward_decay_start_epoch=belief_reward_decay_start_epoch,
+                belief_reward_decay_end_epoch=belief_reward_decay_end_epoch,
+                belief_reward_min_weight=belief_reward_min_weight,
+                # V11: Adaptive decay parameters
+                belief_reward_adaptive_decay=getattr(belief_reward_decay_config, 'adaptive', False) if belief_reward_decay_config else False,
+                belief_reward_target_sr=getattr(belief_reward_decay_config, 'target_sr', 0.90) if belief_reward_decay_config else 0.90,
+                belief_reward_decay_alpha=getattr(belief_reward_decay_config, 'alpha', 2.0) if belief_reward_decay_config else 2.0,
+                # V11: Differential component decay rates
+                belief_reward_progress_decay_rate=getattr(belief_reward_decay_config, 'progress_decay_rate', 0.7) if belief_reward_decay_config else 0.7,
+                belief_reward_consistency_decay_rate=getattr(belief_reward_decay_config, 'consistency_decay_rate', 1.0) if belief_reward_decay_config else 1.0,
+                belief_reward_exploration_decay_rate=getattr(belief_reward_decay_config, 'exploration_decay_rate', 2.0) if belief_reward_decay_config else 2.0,
             )
 
             # Store use_result_reward for later use in reward combination
@@ -112,6 +143,34 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
             self.task_plans = {}
 
         super().__init__(envs, projection_f, env_name)
+
+    def set_current_epoch(self, epoch: int):
+        """
+        V9: Set current epoch for belief reward decay calculation.
+        Should be called by trainer at the start of each epoch.
+
+        Args:
+            epoch: Current epoch number (0-indexed)
+        """
+        if self.use_rebel and self.reward_calculator is not None:
+            self.reward_calculator.set_current_epoch(epoch)
+            # Log belief weight for monitoring
+            belief_weight = self.reward_calculator.get_belief_reward_weight()
+            print(f"[V9] Epoch {epoch}: belief_reward_weight = {belief_weight:.4f}")
+
+    def set_success_rate(self, success_rate: float):
+        """
+        V11: Set current success rate for adaptive belief reward decay.
+        Should be called by trainer after validation.
+
+        Args:
+            success_rate: Overall validation success rate (0-1)
+        """
+        if self.use_rebel and self.reward_calculator is not None:
+            self.reward_calculator.set_success_rate(success_rate)
+            # Log for monitoring
+            belief_weight = self.reward_calculator.get_belief_reward_weight()
+            print(f"[V11] Updated success_rate={success_rate:.4f}, belief_reward_weight={belief_weight:.4f}")
 
     def reset(self):
         text_obs, image_obs, infos = self.envs.reset()
@@ -370,7 +429,7 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                     obs = _ALFWORLD_TEMPLATE_NO_HIS.format(**format_kwargs)
                 else:
                     obs = _ALFWORLD_TEMPLATE_NO_HIS.format(
-                        observation=text_obs[i],
+                        current_observation=text_obs[i],
                         admissible_actions=reformatted_admissible_actions
                     )
             else:
@@ -406,8 +465,12 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                     obs = _ALFWORLD_TEMPLATE.format(**format_kwargs)
                 else:
                     obs = _ALFWORLD_TEMPLATE.format(
-                        history=action_history.strip(),
-                        observation=text_obs[i],
+                        task_description=task_description,
+                        step_count=self.step_counts.get(i, 0),
+                        history_length=min(history_length, len(self.buffers[i])),
+                        action_history=action_history.strip(),
+                        current_step=len(self.buffers[i]),
+                        current_observation=text_obs[i],
                         admissible_actions=reformatted_admissible_actions
                     )
 

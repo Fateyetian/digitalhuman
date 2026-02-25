@@ -64,6 +64,13 @@ class TrajectoryCollector:
 
         _obs_anchor = torch_to_numpy(obs_anchor, is_object=True) if isinstance(obs_anchor, torch.Tensor) else obs_anchor
 
+        # 防御性检查：确保obs_text是字符串或None
+        if obs_text is not None and not isinstance(obs_text, str):
+            raise TypeError(
+                f"obs_text must be str or None, got {type(obs_text)}. "
+                f"item={item}, obs_texts type={type(obs_texts)}"
+            )
+
         # Build chat structure with system prompt
         obs_content = raw_prompt[0]['content']
         if '<image>' in obs_content:
@@ -126,6 +133,14 @@ class TrajectoryCollector:
 
         else:
             raw_prompt = prompt_with_chat_template
+
+        # 防御性检查：确保prompt_with_chat_template是字符串
+        if not isinstance(prompt_with_chat_template, str):
+            raise TypeError(
+                f"prompt_with_chat_template must be str, got {type(prompt_with_chat_template)}. "
+                f"obs_content={repr(obs_content[:100]) if obs_content else None}, "
+                f"obs_text={repr(obs_text[:100]) if obs_text else None}"
+            )
 
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                             tokenizer=self.tokenizer,
@@ -728,6 +743,9 @@ class TrajectoryCollector:
             from agent_system.environments.env_package.alfworld import BeliefDeviationCalculator
             belief_deviation_calc = BeliefDeviationCalculator()
 
+            # V11: Import semantic_belief_abstract for HiBO grouping
+            from rebel.hibo_grouping import semantic_belief_abstract
+
             # V7: Collect belief deviation metrics
             belief_deviations = {
                 'total': [],
@@ -750,6 +768,9 @@ class TrajectoryCollector:
                     # Store parsed belief_state from env
                     belief_state = info.get('belief_state', {})
                     step['belief_state'] = belief_state
+
+                    # V11: Compute and store belief abstract for HiBO grouping
+                    step['belief_abstract'] = semantic_belief_abstract(belief_state)
 
                     # Store ReBel intrinsic reward (already computed in env)
                     rebel_intrinsic = info.get('rebel_intrinsic_reward', 0.0)
@@ -839,4 +860,10 @@ class TrajectoryCollector:
             # 传递ReBel统计信息
             if 'meta_info_rebel' in locals():
                 gen_batch_output.meta_info['rebel_stats'] = meta_info_rebel
+
+            # V11: Pass HiBO configuration to meta_info (for rebel_hibo advantage estimator)
+            gen_batch_output.meta_info["hibo_step_advantage_w"] = float(getattr(self.config.algorithm.rebel, 'step_advantage_w', 0.5))
+            gen_batch_output.meta_info["hibo_mode"] = str(getattr(self.config.algorithm.rebel, 'mode', 'mean_norm'))
+            gen_batch_output.meta_info["hibo_min_obs_group_size"] = int(getattr(self.config.algorithm.rebel, 'min_obs_group_size', 2))
+            gen_batch_output.meta_info["hibo_summarize"] = bool(getattr(self.config.algorithm.rebel, 'summarize_groups', False))
         return gen_batch_output

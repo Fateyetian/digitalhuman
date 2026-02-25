@@ -79,6 +79,7 @@ class AdvantageEstimator(str, Enum):
     RLVMR = 'rlvmr'
     BDRS = 'bdrs'
     ReBel = 'rebel'  # New: Belief-based grouping for advantage estimation
+    ReBelHiBO = 'rebel_hibo'  # V11: Hierarchical Belief-Observation grouping
 
 
 @dataclass
@@ -437,6 +438,54 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
         for key in adv_details:
             if key.startswith('rebel/task_weight_') or key.startswith('rebel/use_task_weighting'):
                 data.meta_info[key] = adv_details[key]
+    elif adv_estimator == AdvantageEstimator.ReBelHiBO:
+        # V11: HiBO (Hierarchical Belief-Observation) Advantage Estimation
+        from rebel.hibo_grouping import compute_hibo_outcome_advantage
+
+        # Check required fields
+        if 'step_rewards' not in data.batch:
+            raise ValueError("HiBO requires step_rewards (discounted returns). Ensure GiGPO step returns are computed.")
+        if 'belief_abstract' not in data.non_tensor_batch:
+            raise ValueError("HiBO requires belief_abstract. Ensure semantic_belief_abstract is computed in rollout.")
+
+        # Get HiBO configuration
+        hibo_step_advantage_w = float(data.meta_info.get('hibo_step_advantage_w', 0.5))
+        hibo_mode = str(data.meta_info.get('hibo_mode', 'mean_norm'))
+        hibo_min_obs_group_size = int(data.meta_info.get('hibo_min_obs_group_size', 2))
+        hibo_summarize = bool(data.meta_info.get('hibo_summarize', False))
+
+        advantages, returns, hibo_details = compute_hibo_outcome_advantage(
+            token_level_rewards=data.batch['token_level_rewards'],
+            step_rewards=data.batch['step_rewards'],
+            eos_mask=data.batch['response_mask'],
+            anchor_obs=data.non_tensor_batch['anchor_obs'],
+            belief_abstracts=data.non_tensor_batch['belief_abstract'],
+            index=data.non_tensor_batch['uid'],
+            step_advantage_w=hibo_step_advantage_w,
+            mode=hibo_mode,
+            min_obs_group_size=hibo_min_obs_group_size,
+            summarize=hibo_summarize,
+        )
+
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['episode_advantages'] = hibo_details['episode_advantages']
+        data.meta_info['step_advantages'] = hibo_details['step_advantages']
+
+        # Log HiBO grouping statistics
+        if 'hibo_stats' in hibo_details:
+            stats = hibo_details['hibo_stats']
+            data.meta_info['hibo_num_groups'] = stats['num_groups']
+            data.meta_info['hibo_mean_group_size'] = stats['mean_group_size']
+            data.meta_info['hibo_median_group_size'] = stats['median_group_size']
+            data.meta_info['hibo_min_group_size'] = stats['min_group_size']
+            data.meta_info['hibo_max_group_size'] = stats['max_group_size']
+            data.meta_info['hibo_std_group_size'] = stats['std_group_size']
+            data.meta_info['hibo_single_sample_ratio'] = stats['single_sample_ratio']
+            data.meta_info['hibo_obs_group_ratio'] = stats['obs_group_ratio']
+            data.meta_info['hibo_belief_fallback_ratio'] = stats['belief_fallback_ratio']
+            data.meta_info['hibo_obs_mean_size'] = stats['obs_mean_size']
+            data.meta_info['hibo_belief_mean_size'] = stats['belief_mean_size']
     else:
         raise NotImplementedError
     return data
@@ -515,7 +564,7 @@ class RayPPOTrainer(object):
         elif self.config.algorithm.adv_estimator in [
                 AdvantageEstimator.GRPO, AdvantageEstimator.REINFORCE_PLUS_PLUS, AdvantageEstimator.REMAX,
                 AdvantageEstimator.RLOO, AdvantageEstimator.GiGPO, AdvantageEstimator.RLVMR,
-                AdvantageEstimator.BDRS, AdvantageEstimator.ReBel
+                AdvantageEstimator.BDRS, AdvantageEstimator.ReBel, AdvantageEstimator.ReBelHiBO
         ]:
             self.use_critic = False
         else:
@@ -1229,6 +1278,12 @@ class RayPPOTrainer(object):
         last_val_metrics = None
 
         for epoch in range(self.config.trainer.total_epochs):
+            # V9: Update current epoch for belief reward decay
+            if hasattr(self.envs, 'set_current_epoch'):
+                self.envs.set_current_epoch(epoch)
+            if hasattr(self.val_envs, 'set_current_epoch'):
+                self.val_envs.set_current_epoch(epoch)
+
             for batch_dict in self.train_dataloader:
                 metrics = {}
                 timing_raw = {}
@@ -1298,6 +1353,14 @@ class RayPPOTrainer(object):
                         )
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.GiGPO:
+                        step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
+                            batch=batch,
+                            gamma=self.config.algorithm.gamma
+                        )
+                        batch.batch['step_rewards'] = step_rewards_tensor
+
+                    # V11: ReBelHiBO also needs step discounted returns (same as GiGPO)
+                    if self.config.algorithm.adv_estimator == AdvantageEstimator.ReBelHiBO:
                         step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
                             batch=batch,
                             gamma=self.config.algorithm.gamma
@@ -1407,6 +1470,21 @@ class RayPPOTrainer(object):
                                 last_val_metrics = val_metrics
                         metrics.update(val_metrics)
 
+                        # V11: Pass overall success rate to envs for adaptive belief reward decay
+                        if self.config.algorithm.adv_estimator in (AdvantageEstimator.ReBel, AdvantageEstimator.ReBelHiBO):
+                            overall_sr_keys = [k for k in val_metrics if 'success_rate' in k and 'overall' in k.lower()]
+                            if overall_sr_keys:
+                                overall_sr = val_metrics[overall_sr_keys[0]]
+                            elif self.task_success_rates:
+                                overall_sr = np.mean(list(self.task_success_rates.values()))
+                            else:
+                                overall_sr = None
+                            if overall_sr is not None:
+                                if hasattr(self.envs, 'set_success_rate'):
+                                    self.envs.set_success_rate(float(overall_sr))
+                                if hasattr(self.val_envs, 'set_success_rate'):
+                                    self.val_envs.set_success_rate(float(overall_sr))
+
                     if self.config.trainer.save_freq > 0 and ( is_last_step or \
                             self.global_steps % self.config.trainer.save_freq == 0):
                         with _timer('save_checkpoint', timing_raw):
@@ -1461,6 +1539,31 @@ class RayPPOTrainer(object):
                         # Belief valid ratio
                         if 'belief_valid_ratio' in bd_stats:
                             metrics['rebel/belief_valid_ratio'] = bd_stats['belief_valid_ratio'].get('mean', 0.0)
+
+                # V11: Add HiBO metrics from meta_info
+                hibo_metric_keys = [
+                    'hibo_num_groups', 'hibo_mean_group_size', 'hibo_median_group_size',
+                    'hibo_min_group_size', 'hibo_max_group_size', 'hibo_std_group_size',
+                    'hibo_single_sample_ratio', 'hibo_obs_group_ratio',
+                    'hibo_belief_fallback_ratio', 'hibo_obs_mean_size', 'hibo_belief_mean_size'
+                ]
+                for key in hibo_metric_keys:
+                    if key in batch.meta_info:
+                        metrics[f'hibo/{key.replace("hibo_", "")}'] = batch.meta_info[key]
+
+                # V11: Add HiBO belief deviation and intrinsic reward metrics (shared with ReBel)
+                if 'rebel_stats' in batch.meta_info and self.config.algorithm.adv_estimator == AdvantageEstimator.ReBelHiBO:
+                    rebel_stats = batch.meta_info['rebel_stats']
+                    if 'intrinsic_reward' in rebel_stats:
+                        ir_stats = rebel_stats['intrinsic_reward']
+                        metrics['hibo/intrinsic_reward_mean'] = ir_stats.get('mean', 0.0)
+                        metrics['hibo/intrinsic_reward_std'] = ir_stats.get('std', 0.0)
+                    if 'belief_deviation' in rebel_stats:
+                        bd_stats = rebel_stats['belief_deviation']
+                        if 'total' in bd_stats:
+                            metrics['hibo/belief_deviation_total_mean'] = bd_stats['total'].get('mean', 0.0)
+                        if 'belief_valid_ratio' in bd_stats:
+                            metrics['hibo/belief_valid_ratio'] = bd_stats['belief_valid_ratio'].get('mean', 0.0)
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)

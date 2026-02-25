@@ -53,7 +53,7 @@ class BeliefStateParser:
             belief_data = json.loads(belief_json)
 
             # New format: nested JSON structure
-            if 'world_model_update' in belief_data or 'task_progress_update' in belief_data:
+            if isinstance(belief_data, dict) and ('world_model_update' in belief_data or 'task_progress_update' in belief_data):
                 return {
                     'world_model_update': belief_data.get('world_model_update', {}),
                     'task_progress_update': belief_data.get('task_progress_update', {}),
@@ -265,7 +265,18 @@ class GroundTruthTracker:
 class RebelRewardCalculator:
     """Calculate three intrinsic rewards for ReBel framework"""
 
-    def __init__(self, alpha=0.3, beta=0.5, gamma=0.2, delta=0.1, use_belief_reward=True):
+    def __init__(self, alpha=0.3, beta=0.5, gamma=0.2, delta=0.1, use_belief_reward=True,
+                 belief_reward_decay_enable=False, belief_reward_decay_method='cosine',
+                 belief_reward_warmup_epochs=5, belief_reward_decay_start_epoch=10,
+                 belief_reward_decay_end_epoch=60, belief_reward_min_weight=0.1,
+                 # V11: Adaptive decay parameters
+                 belief_reward_adaptive_decay=False,
+                 belief_reward_target_sr=0.90,
+                 belief_reward_decay_alpha=2.0,
+                 # V11: Differential component decay rates
+                 belief_reward_progress_decay_rate=0.7,
+                 belief_reward_consistency_decay_rate=1.0,
+                 belief_reward_exploration_decay_rate=2.0):
         """
         Args:
             alpha: Weight for consistency reward (environment alignment)
@@ -273,12 +284,44 @@ class RebelRewardCalculator:
             gamma: Weight for exploration reward (exploration efficiency)
             delta: Weight for format validity reward (output format compliance)
             use_belief_reward: Whether to use belief-based intrinsic rewards (for ablation studies)
+            belief_reward_decay_enable: Whether to enable belief reward decay (V9)
+            belief_reward_decay_method: Decay method - 'cosine', 'linear', 'exponential', 'adaptive' (V9/V11)
+            belief_reward_warmup_epochs: Number of warmup epochs (V9)
+            belief_reward_decay_start_epoch: Epoch to start decay (V9)
+            belief_reward_decay_end_epoch: Epoch to end decay (V9)
+            belief_reward_min_weight: Minimum weight after decay (V9)
+            belief_reward_adaptive_decay: Whether to use success-rate-based adaptive decay (V11)
+            belief_reward_target_sr: Target success rate for full decay (V11)
+            belief_reward_decay_alpha: Decay curve exponent (V11)
+            belief_reward_progress_decay_rate: Differential decay rate for progress (V11, slow=0.7)
+            belief_reward_consistency_decay_rate: Differential decay rate for consistency (V11, normal=1.0)
+            belief_reward_exploration_decay_rate: Differential decay rate for exploration (V11, fast=2.0)
         """
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
         self.delta = delta
         self.use_belief_reward = use_belief_reward
+
+        # V9: Belief reward decay parameters
+        self.belief_reward_decay_enable = belief_reward_decay_enable
+        self.belief_reward_decay_method = belief_reward_decay_method
+        self.belief_reward_warmup_epochs = belief_reward_warmup_epochs
+        self.belief_reward_decay_start_epoch = belief_reward_decay_start_epoch
+        self.belief_reward_decay_end_epoch = belief_reward_decay_end_epoch
+        self.belief_reward_min_weight = belief_reward_min_weight
+        self.current_epoch = 0  # Will be updated by env_manager
+
+        # V11: Adaptive decay parameters
+        self.belief_reward_adaptive_decay = belief_reward_adaptive_decay
+        self.belief_reward_target_sr = belief_reward_target_sr
+        self.belief_reward_decay_alpha = belief_reward_decay_alpha
+        self.current_success_rate = None  # Will be updated by env_manager
+
+        # V11: Differential component decay rates
+        self.progress_decay_rate = belief_reward_progress_decay_rate
+        self.consistency_decay_rate = belief_reward_consistency_decay_rate
+        self.exploration_decay_rate = belief_reward_exploration_decay_rate
 
         # Hyperparameters for reward calculation
         self.consistency_scale = 0.1  # Scale to match task reward magnitude
@@ -289,6 +332,128 @@ class RebelRewardCalculator:
         self.format_valid_reward = 0.01      # Small bonus for correct format
         self.format_invalid_penalty = -0.05  # Penalty for incorrect format
         self.action_invalid_penalty = -0.02  # Additional penalty for invalid action
+
+    def set_current_epoch(self, epoch: int):
+        """V9: Update current epoch for belief reward decay calculation"""
+        self.current_epoch = epoch
+
+    def set_success_rate(self, success_rate: float):
+        """V11: Update current success rate for adaptive decay"""
+        self.current_success_rate = success_rate
+
+    def get_belief_reward_weight(self) -> float:
+        """
+        V9/V11: Calculate belief reward weight based on current epoch and success rate.
+
+        V9: Fixed schedule (cosine/linear/exponential)
+        V11: Adaptive schedule based on success rate + cosine floor as safety net
+
+        Implements multi-phase schedule:
+        1. Warmup phase (0 -> warmup_epochs): weight increases from 0 to 1
+        2. Peak phase (warmup_epochs -> decay_start_epoch): weight stays at 1
+        3. Decay phase: adaptive (SR-based) or fixed schedule
+        4. Maintain phase (> decay_end_epoch): weight stays at min_weight
+
+        Returns:
+            float: Belief reward weight in [min_weight, 1.0]
+        """
+        import math
+
+        if not self.belief_reward_decay_enable:
+            return 1.0 if self.use_belief_reward else 0.0
+
+        epoch = self.current_epoch
+        warmup = self.belief_reward_warmup_epochs
+        decay_start = self.belief_reward_decay_start_epoch
+        decay_end = self.belief_reward_decay_end_epoch
+        min_weight = self.belief_reward_min_weight
+
+        # Phase 1: Warmup (0 -> warmup_epochs)
+        if epoch < warmup:
+            return epoch / warmup if warmup > 0 else 1.0
+
+        # Base weight after warmup
+        base_weight = 1.0
+
+        # V11: Adaptive decay based on success rate
+        if self.belief_reward_adaptive_decay and self.current_success_rate is not None and epoch >= warmup:
+            sr = self.current_success_rate
+            target_sr = self.belief_reward_target_sr
+            alpha = self.belief_reward_decay_alpha
+
+            if target_sr > 0:
+                decay_factor = max(min_weight, 1.0 - (sr / target_sr) ** alpha)
+            else:
+                decay_factor = 1.0
+            base_weight = base_weight * decay_factor
+
+        # Phase 2: Peak (warmup_epochs -> decay_start_epoch) — only if no adaptive decay
+        if not self.belief_reward_adaptive_decay and epoch < decay_start:
+            return 1.0
+
+        # Phase 3: Cosine floor (safety net, applies regardless of adaptive mode)
+        if epoch > decay_start:
+            progress = (epoch - decay_start) / (decay_end - decay_start)
+            progress = min(1.0, max(0.0, progress))
+
+            if self.belief_reward_decay_method == 'cosine' or self.belief_reward_adaptive_decay:
+                cosine_weight = min_weight + (1.0 - min_weight) * 0.5 * (1 + math.cos(math.pi * progress))
+            elif self.belief_reward_decay_method == 'linear':
+                cosine_weight = 1.0 - progress * (1.0 - min_weight)
+            elif self.belief_reward_decay_method == 'exponential':
+                cosine_weight = min_weight + (1.0 - min_weight) * math.exp(-3 * progress)
+            else:
+                cosine_weight = min_weight + (1.0 - min_weight) * 0.5 * (1 + math.cos(math.pi * progress))
+
+            cosine_weight = max(min_weight, cosine_weight)
+
+            if self.belief_reward_adaptive_decay:
+                # Take the more aggressive (lower) of adaptive and cosine floor
+                base_weight = min(base_weight, cosine_weight)
+            else:
+                base_weight = cosine_weight
+
+        return max(min_weight, base_weight)
+
+    def compute_component_weights(self, base_weight: float) -> Dict[str, float]:
+        """
+        V11: Compute per-component weights with differential decay rates.
+
+        Different reward components have different alignment with the task objective:
+        - Progress (most aligned): decays slowest (rate=0.7)
+        - Consistency (moderately aligned): normal decay (rate=1.0)
+        - Exploration (least aligned, potentially harmful): decays fastest (rate=2.0)
+        - Format: never decays (structural necessity)
+
+        The formula: component_weight = base_weight ^ decay_rate
+        When base_weight = 0.5:
+          progress:    0.5^0.7 = 0.62 (retains 62%)
+          consistency: 0.5^1.0 = 0.50 (retains 50%)
+          exploration: 0.5^2.0 = 0.25 (retains only 25%)
+
+        Args:
+            base_weight: Overall belief reward weight from get_belief_reward_weight()
+
+        Returns:
+            Dict with keys 'progress', 'consistency', 'exploration', 'format'
+        """
+        if base_weight <= 0:
+            return {
+                'progress': 0.0,
+                'consistency': 0.0,
+                'exploration': 0.0,
+                'format': 1.0,
+            }
+
+        # Clamp to avoid math domain errors
+        bw = max(1e-8, min(1.0, base_weight))
+
+        return {
+            'progress': bw ** self.progress_decay_rate,
+            'consistency': bw ** self.consistency_decay_rate,
+            'exploration': bw ** self.exploration_decay_rate,
+            'format': 1.0,  # Format never decays
+        }
 
     def calculate_consistency_reward(
         self,
@@ -896,18 +1061,27 @@ class RebelRewardCalculator:
         r_exploration = self.calculate_exploration_reward(exploration_map, ground_truth, step)
         r_format = self.calculate_format_reward(is_format_valid, is_action_available)
 
-        # V8 Ablation: Support disabling belief rewards
-        if not self.use_belief_reward:
-            # Ablation: Only use format reward (no belief-based intrinsic rewards)
-            r_consistency = 0.0
-            r_progress = 0.0
-            r_exploration = 0.0
+        # V9: Get belief reward weight (supports decay schedule)
+        belief_weight = self.get_belief_reward_weight()
 
-        # Weighted combination
+        # V8 Ablation: Support disabling belief rewards (backward compatible)
+        if not self.use_belief_reward and not self.belief_reward_decay_enable:
+            # Ablation: Only use format reward (no belief-based intrinsic rewards)
+            belief_weight = 0.0
+
+        # V11: Compute per-component weights with differential decay
+        component_weights = self.compute_component_weights(belief_weight)
+
+        # V11: Apply differential component weights
+        r_consistency_weighted = r_consistency * component_weights['consistency']
+        r_progress_weighted = r_progress * component_weights['progress']
+        r_exploration_weighted = r_exploration * component_weights['exploration']
+
+        # Weighted combination with differentially decayed belief rewards
         total_reward = (
-            self.alpha * r_consistency +
-            self.beta * r_progress +
-            self.gamma * r_exploration +
+            self.alpha * r_consistency_weighted +
+            self.beta * r_progress_weighted +
+            self.gamma * r_exploration_weighted +
             self.delta * r_format
         )
 
@@ -916,7 +1090,17 @@ class RebelRewardCalculator:
             'r_progress': r_progress,
             'r_exploration': r_exploration,
             'r_format': r_format,
-            'r_intrinsic_total': total_reward
+            'r_intrinsic_total': total_reward,
+            # V9: Add belief weight tracking for monitoring
+            'belief_weight': belief_weight,
+            'r_consistency_weighted': r_consistency_weighted,
+            'r_progress_weighted': r_progress_weighted,
+            'r_exploration_weighted': r_exploration_weighted,
+            'current_epoch': self.current_epoch,
+            # V11: Component weights for monitoring
+            'component_weight_progress': component_weights['progress'],
+            'component_weight_consistency': component_weights['consistency'],
+            'component_weight_exploration': component_weights['exploration'],
         }
 
         return total_reward, breakdown
