@@ -274,9 +274,9 @@ env:
   # Uses high-capability model (Claude Opus) for initial task planning
   use_teacher_planner: True
   teacher_planner:
-    model: "claude-opus-4-5-20251101"
-    api_base: "https://api.yourapi.cn"
-    api_key: "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV"
+    model: "claude-sonnet-4-6-cc"
+    api_base: "https://www.dmxapi.cn"
+    api_key: "sk-4n74DJ6yiFNurN9Yq3JpzrxDvuUzN0vQQmh8s6kIl6IHrLEh"
   alfworld:
     generalization_level: 0
     meta_think: False

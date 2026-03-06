@@ -43,13 +43,22 @@ def _worker(remote, seed, env_kwargs):
                 info['available_actions'] = env.get_available_actions()
                 info['task_score'] = reward
 
-                # Redefine reward. We only use rule-based reward - win for 10, lose for 0.
-                if done and reward == 1.0:
-                    info['won'] = True
-                    reward = 10.0
+                # Use continuous reward scaled to [0, 10] for meaningful RL signal.
+                # Previously: binary (10 if perfect, 0 otherwise) which almost never
+                # triggered because get_reward() returns a continuous [0,1] score and
+                # exact 1.0 is extremely rare. This caused success_rate=0 throughout
+                # training and no RL gradient signal.
+                #
+                # "won" threshold at 0.5 for success_rate metric (used in logging and
+                # adaptive belief decay). Continuous reward preserves partial-credit
+                # signal so the policy can learn incrementally.
+                WIN_THRESHOLD = 0.5
+                if done:
+                    info['won'] = bool(reward >= WIN_THRESHOLD)
+                    reward = reward * 10.0  # scale [0,1] -> [0,10]
                 else:
                     info['won'] = False
-                    reward = 0
+                    reward = 0.0
 
                 remote.send((obs, reward, done, info))
 
@@ -136,6 +145,37 @@ class WebshopMultiProcessEnv(gym.Env):
     # Base API ----------------------------------------------------------
     # ------------------------------------------------------------------
 
+    def _restart_worker(self, idx: int):
+        """Restart a dead worker subprocess in-place."""
+        ctx = mp.get_context('spawn')
+        parent_remote, child_remote = mp.Pipe()
+        seed_for_worker = self._rng.randint(0, 2 ** 32)
+        worker = ctx.Process(
+            target=_worker,
+            args=(child_remote, seed_for_worker, self._env_kwargs),
+        )
+        worker.daemon = True
+        worker.start()
+        child_remote.close()
+        self._parent_remotes[idx] = parent_remote
+        self._workers[idx] = worker
+        print(f"[WebshopEnv] Restarted worker {idx}")
+
+    def _safe_recv(self, idx: int, timeout: float = 120.0):
+        """Receive from worker with timeout and auto-restart on failure."""
+        remote = self._parent_remotes[idx]
+        try:
+            if remote.poll(timeout):
+                return remote.recv()
+            else:
+                print(f"[WebshopEnv] Worker {idx} timed out after {timeout}s, restarting...")
+                self._restart_worker(idx)
+                return None
+        except (EOFError, BrokenPipeError, ConnectionResetError) as e:
+            print(f"[WebshopEnv] Worker {idx} pipe error ({e}), restarting...")
+            self._restart_worker(idx)
+            return None
+
     def step(self, actions: list[str]):
         if len(actions) != self.num_processes:
             raise ValueError(
@@ -146,12 +186,21 @@ class WebshopMultiProcessEnv(gym.Env):
             remote.send(('step', action))
 
         obs_list, reward_list, done_list, info_list = [], [], [], []
-        for remote in self._parent_remotes:
-            obs, reward, done, info = remote.recv()
-            obs_list.append(obs)
-            reward_list.append(reward)
-            done_list.append(done)
-            info_list.append(info)
+        for i in range(self.num_processes):
+            result = self._safe_recv(i)
+            if result is None:
+                # Worker died; return a safe default (done=True so it's skipped)
+                obs_list.append("")
+                reward_list.append(0.0)
+                done_list.append(True)
+                info_list.append({'available_actions': {'has_search_bar': False, 'clickables': []},
+                                  'task_score': 0.0, 'won': False})
+            else:
+                obs, reward, done, info = result
+                obs_list.append(obs)
+                reward_list.append(reward)
+                done_list.append(done)
+                info_list.append(info)
 
         return obs_list, reward_list, done_list, info_list
 
@@ -164,13 +213,27 @@ class WebshopMultiProcessEnv(gym.Env):
         seeds = np.repeat(base_seeds, self.group_n).tolist()
 
         for remote, seed in zip(self._parent_remotes, seeds):
-            remote.send(('reset', seed))
+            try:
+                remote.send(('reset', seed))
+            except (BrokenPipeError, ConnectionResetError):
+                idx = self._parent_remotes.index(remote)
+                self._restart_worker(idx)
+                self._parent_remotes[idx].send(('reset', seed))
 
         obs_list, info_list = [], []
-        for remote in self._parent_remotes:
-            obs, info = remote.recv()
-            obs_list.append(obs)
-            info_list.append(info)
+        for i in range(self.num_processes):
+            result = self._safe_recv(i)
+            if result is None:
+                # Fallback: send reset again to the freshly restarted worker
+                self._parent_remotes[i].send(('reset', seeds[i]))
+                result = self._safe_recv(i)
+            if result is None:
+                obs_list.append("")
+                info_list.append({'available_actions': {'has_search_bar': True, 'clickables': []}, 'won': False})
+            else:
+                obs, info = result
+                obs_list.append(obs)
+                info_list.append(info)
 
         return obs_list, info_list
 

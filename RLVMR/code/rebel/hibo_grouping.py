@@ -52,6 +52,122 @@ def classify_stage(subgoal: str) -> str:
     return 'other'
 
 
+def classify_webshop_stage(subgoal: str) -> str:
+    """
+    Classify WebShop subgoal text into a discrete stage type (~6 categories).
+    """
+    subgoal = subgoal.lower().strip()
+
+    if any(x in subgoal for x in ['done', 'bought', 'purchased', 'complete', 'finished']):
+        return 'done'
+    if any(x in subgoal for x in ['buy', 'purchase', 'confirm', 'checkout']):
+        return 'ready_to_buy'
+    if any(x in subgoal for x in ['select', 'option', 'choose', 'pick', 'configure', 'size', 'color']):
+        return 'selecting_options'
+    if any(x in subgoal for x in ['view', 'look at', 'check', 'examine', 'detail', 'product page']):
+        return 'viewing_product'
+    if any(x in subgoal for x in ['browse', 'result', 'compare', 'scroll', 'next', 'prev']):
+        return 'browsing_results'
+    if any(x in subgoal for x in ['search', 'find', 'query', 'look for']):
+        return 'searching'
+    return 'searching'  # Default to searching
+
+
+def webshop_semantic_belief_abstract(belief_json: Optional[Dict[str, Any]]) -> str:
+    """
+    Extract coarse-grained semantic features from WebShop belief JSON.
+
+    Features:
+    - stage: ~6 categories (searching, browsing_results, viewing_product, selecting_options, ready_to_buy, done)
+    - target_match: 3 levels (none, partial, exact)
+    - options_selected: bool (2 values)
+    - query_diversity: 2 levels (low=0-2, high=3+)
+    - verification_completeness: 3 levels (none, partial, complete)
+
+    Theoretical combinations: 6 x 3 x 2 x 2 x 3 = 216 (expected active: ~50-80)
+
+    Args:
+        belief_json: Parsed belief state dictionary
+
+    Returns:
+        16-char MD5 hash of the semantic features
+    """
+    if belief_json is None or not isinstance(belief_json, dict):
+        return "null_belief_hibo"
+
+    try:
+        search_progress = belief_json.get('search_progress', {}) or {}
+        product_understanding = belief_json.get('product_understanding', {}) or {}
+        exploration_state = belief_json.get('exploration_state', {}) or {}
+        attribute_verification = belief_json.get('attribute_verification', {}) or {}
+
+        # Dimension 1: Current stage (~6 categories)
+        subgoal = str(search_progress.get('updated_subgoal', '')).lower().strip()
+        search_status = str(search_progress.get('search_status', '')).lower().strip()
+        # Use search_status directly if it matches known stages
+        if search_status in ('not_started', 'searching', 'product_found', 'options_selecting', 'ready_to_buy'):
+            stage_map = {
+                'not_started': 'searching',
+                'searching': 'searching',
+                'product_found': 'viewing_product',
+                'options_selecting': 'selecting_options',
+                'ready_to_buy': 'ready_to_buy',
+            }
+            stage = stage_map.get(search_status, 'searching')
+        else:
+            stage = classify_webshop_stage(subgoal)
+
+        # Dimension 2: Target product match (3 categories)
+        match_level = str(product_understanding.get('current_product_match', 'none')).lower().strip()
+        if match_level not in ('none', 'partial', 'exact'):
+            match_level = 'none'
+
+        # Dimension 3: Options selected? (2 categories)
+        options_selected_list = exploration_state.get('options_selected', [])
+        if not isinstance(options_selected_list, list):
+            options_selected_list = []
+        has_options = len(options_selected_list) > 0
+
+        # Dimension 4: Query diversity (2 categories)
+        queries_tried = exploration_state.get('queries_tried', [])
+        if not isinstance(queries_tried, list):
+            queries_tried = []
+        query_diversity = 'high' if len(queries_tried) >= 3 else 'low'
+
+        # Dimension 5: Verification completeness (3 categories)
+        verified = attribute_verification.get('verified', [])
+        unverified = attribute_verification.get('unverified', [])
+        inferred_only = attribute_verification.get('inferred_only', [])
+        if not isinstance(verified, list):
+            verified = []
+        if not isinstance(unverified, list):
+            unverified = []
+        if not isinstance(inferred_only, list):
+            inferred_only = []
+
+        total_tracked = len(verified) + len(unverified) + len(inferred_only)
+        if total_tracked == 0:
+            verification_level = 'none'
+        elif len(unverified) == 0 and len(inferred_only) == 0:
+            verification_level = 'complete'
+        else:
+            verification_level = 'partial'
+
+        features = {
+            'stage': stage,
+            'match': match_level,
+            'has_options': has_options,
+            'query_div': query_diversity,
+            'verify': verification_level,
+        }
+
+        canonical_str = json.dumps(features, sort_keys=True)
+        return hashlib.md5(canonical_str.encode()).hexdigest()[:16]
+
+    except Exception:
+        return "error_belief_hbo"
+
+
 def bucket_exploration(cleared_count: int) -> str:
     """
     Bucket exploration progress into 3 discrete levels.
