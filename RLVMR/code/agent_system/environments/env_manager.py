@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from functools import partial
 import os
+import re
 from agent_system.environments.prompts import *
 from agent_system.environments.base import EnvironmentManagerBase, to_numpy
 import copy
@@ -949,17 +950,178 @@ class SciWorldEnvironmentManager(EnvironmentManagerBase):
         self.meta_think = type
 
 class WebshopEnvironmentManager(EnvironmentManagerBase):
-    def __init__(self, envs, projection_f, env_name):
+    def __init__(self, envs, projection_f, env_name, config=None):
         self.buffers = None
+        self.config = config
+
+        # Check if ReBel mode is enabled
+        self.use_rebel = (
+            config is not None and
+            hasattr(config, 'algorithm') and
+            hasattr(config.algorithm, 'rebel') and
+            getattr(config.algorithm.rebel, 'enable', False)
+        )
+
+        # Initialize ReBel components if enabled
+        if self.use_rebel:
+            from agent_system.environments.env_package.webshop import (
+                WebShopBeliefStateParser, WebShopGroundTruthTracker, WebShopRebelRewardCalculator
+            )
+            self.belief_parser = WebShopBeliefStateParser()
+
+            # V8 Ablation: Read use_belief_reward and use_result_reward parameters
+            use_belief_reward = getattr(config.algorithm.rebel, 'use_belief_reward', True)
+            use_result_reward = getattr(config.algorithm.rebel, 'use_result_reward', True)
+
+            # V9: Read belief reward decay parameters
+            belief_reward_decay_config = getattr(config.algorithm.rebel, 'belief_reward_decay', None)
+            if belief_reward_decay_config is not None:
+                belief_reward_decay_enable = getattr(belief_reward_decay_config, 'enable', False)
+                belief_reward_decay_method = getattr(belief_reward_decay_config, 'method', 'cosine')
+                belief_reward_warmup_epochs = getattr(belief_reward_decay_config, 'warmup_epochs', 5)
+                belief_reward_decay_start_epoch = getattr(belief_reward_decay_config, 'decay_start_epoch', 10)
+                belief_reward_decay_end_epoch = getattr(belief_reward_decay_config, 'decay_end_epoch', 60)
+                belief_reward_min_weight = getattr(belief_reward_decay_config, 'min_weight', 0.1)
+            else:
+                belief_reward_decay_enable = False
+                belief_reward_decay_method = 'cosine'
+                belief_reward_warmup_epochs = 5
+                belief_reward_decay_start_epoch = 10
+                belief_reward_decay_end_epoch = 60
+                belief_reward_min_weight = 0.1
+
+            self.reward_calculator = WebShopRebelRewardCalculator(
+                alpha=getattr(config.algorithm.rebel, 'alpha', 0.3),
+                beta=getattr(config.algorithm.rebel, 'beta', 0.5),
+                gamma=getattr(config.algorithm.rebel, 'gamma', 0.2),
+                delta=getattr(config.algorithm.rebel, 'delta', 0.1),
+                use_belief_reward=use_belief_reward,
+                belief_reward_decay_enable=belief_reward_decay_enable,
+                belief_reward_decay_method=belief_reward_decay_method,
+                belief_reward_warmup_epochs=belief_reward_warmup_epochs,
+                belief_reward_decay_start_epoch=belief_reward_decay_start_epoch,
+                belief_reward_decay_end_epoch=belief_reward_decay_end_epoch,
+                belief_reward_min_weight=belief_reward_min_weight,
+                # V11: Adaptive decay parameters
+                belief_reward_adaptive_decay=getattr(belief_reward_decay_config, 'adaptive', False) if belief_reward_decay_config else False,
+                belief_reward_target_sr=getattr(belief_reward_decay_config, 'target_sr', 0.90) if belief_reward_decay_config else 0.90,
+                belief_reward_decay_alpha=getattr(belief_reward_decay_config, 'alpha', 2.0) if belief_reward_decay_config else 2.0,
+                # V11: Differential component decay rates
+                belief_reward_progress_decay_rate=getattr(belief_reward_decay_config, 'progress_decay_rate', 0.7) if belief_reward_decay_config else 0.7,
+                belief_reward_consistency_decay_rate=getattr(belief_reward_decay_config, 'consistency_decay_rate', 1.0) if belief_reward_decay_config else 1.0,
+                belief_reward_exploration_decay_rate=getattr(belief_reward_decay_config, 'exploration_decay_rate', 2.0) if belief_reward_decay_config else 2.0,
+            )
+
+            self.use_result_reward = use_result_reward
+            self.ground_truth_trackers = {}
+            self.cumulative_beliefs = {}
+            self.step_counts = {}
+            self.task_plans = {}
+        else:
+            self.belief_parser = None
+            self.reward_calculator = None
+            self.ground_truth_trackers = {}
+            self.cumulative_beliefs = {}
+            self.step_counts = {}
+            self.task_plans = {}
+
         super().__init__(envs, projection_f, env_name)
-    
+
+    def set_current_epoch(self, epoch: int):
+        """V9: Set current epoch for belief reward decay calculation."""
+        if self.use_rebel and self.reward_calculator is not None:
+            self.reward_calculator.set_current_epoch(epoch)
+            belief_weight = self.reward_calculator.get_belief_reward_weight()
+            print(f"[V9] Epoch {epoch}: belief_reward_weight = {belief_weight:.4f}")
+
+    def set_success_rate(self, success_rate: float):
+        """V11: Set current success rate for adaptive belief reward decay."""
+        if self.use_rebel and self.reward_calculator is not None:
+            self.reward_calculator.set_success_rate(success_rate)
+            belief_weight = self.reward_calculator.get_belief_reward_weight()
+            print(f"[V11] Updated success_rate={success_rate:.4f}, belief_reward_weight={belief_weight:.4f}")
+
+    # ------------------------------------------------------------------
+    # ReBel Planning interface (mirrors AlfWorldEnvironmentManager)
+    # ------------------------------------------------------------------
+
+    def get_planning_prompts(self) -> List[str]:
+        """
+        Get planning prompts for all WebShop environments.
+        Called BEFORE the main interaction loop starts.
+        """
+        if not self.use_rebel:
+            return []
+
+        planning_prompts = []
+        for i in range(len(self.tasks)):
+            prompt = (
+                f"You are an expert online shopping agent. "
+                f"Your task is to: {self.tasks[i]}\n\n"
+                f"Current observation:\n{self.pre_text_obs[i]}\n\n"
+                f"Create a step-by-step plan as JSON with keys: "
+                f"main_goal, target_attributes, search_strategy, plan_steps, success_criteria."
+            )
+            planning_prompts.append(prompt)
+
+        return planning_prompts
+
+    def set_task_plans(self, plans: List[dict]):
+        """
+        Store task plans produced by the teacher / training model.
+        """
+        if not self.use_rebel:
+            return
+
+        for i, plan in enumerate(plans):
+            if plan is not None and isinstance(plan, dict):
+                self.task_plans[i] = plan
+
+                # Propagate planning info into cumulative_beliefs
+                if i in self.cumulative_beliefs:
+                    sp = self.cumulative_beliefs[i].get('search_progress', {})
+                    sp['main_goal'] = plan.get('main_goal', '')
+                    sp['plan'] = plan.get('plan_steps', [])
+
+                    plan_steps = plan.get('plan_steps', [])
+                    if plan_steps:
+                        first = plan_steps[0]
+                        if isinstance(first, dict):
+                            sp['updated_subgoal'] = first.get('subgoal', sp.get('updated_subgoal', ''))
+                        elif isinstance(first, str):
+                            sp['updated_subgoal'] = first
+
+                    self.cumulative_beliefs[i]['search_progress'] = sp
+
+    def has_task_plans(self) -> bool:
+        return len(self.task_plans) > 0
+
+    def parse_planning_output(self, outputs: List[str]) -> List[dict]:
+        """Parse model outputs from planning prompts into structured plan dicts."""
+        import json as _json
+        plans = []
+        for output in outputs:
+            try:
+                plan = _json.loads(output.strip())
+                plans.append(plan)
+            except _json.JSONDecodeError:
+                json_match = re.search(r'\{[\s\S]*\}', output)
+                if json_match:
+                    try:
+                        plan = _json.loads(json_match.group())
+                        plans.append(plan)
+                    except _json.JSONDecodeError:
+                        plans.append(None)
+                else:
+                    plans.append(None)
+        return plans
+
     def reset(self) -> Dict[str, Any]:
         obs, infos = self.envs.reset()
         self.tasks = self.extract_task(obs)
         obs = self.format_obs(obs)
-        # infos = [None] * self.envs.num_envs
-        observations = {'text': self.build_text_obs(obs, infos, init=True), 
-                        'image': None, 
+        observations = {'text': self.build_text_obs(obs, infos, init=True),
+                        'image': None,
                         'anchor': obs.copy()
                         }
         self.pre_text_obs = obs
@@ -967,21 +1129,74 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
         if self.buffers is not None:
             self.buffers.clear()
         self.buffers = [[] for _ in range(len(infos))]
-        # initialize belief states with tasks
-        env_ids = list(range(len(infos)))
-        try:
-            self.belief_mgr.reset(env_ids=env_ids, task_desc=self.tasks)
-        except Exception:
-            self.belief_mgr.reset(env_ids=env_ids, task_desc=None)
+
+        # Initialize ReBel ground truth trackers
+        if self.use_rebel:
+            from agent_system.environments.env_package.webshop import WebShopGroundTruthTracker
+            self.ground_truth_trackers.clear()
+            self.cumulative_beliefs.clear()
+            self.step_counts.clear()
+
+            for i in range(len(infos)):
+                tracker = WebShopGroundTruthTracker()
+                tracker.task_goal = self.tasks[i]
+                tracker.update_from_observation(obs[i], info=infos[i])
+                self.ground_truth_trackers[i] = tracker
+
+                self.cumulative_beliefs[i] = {
+                    'product_understanding': {
+                        'target_attributes': {},
+                        'current_product_match': 'none',
+                        'price_constraint': 'any'
+                    },
+                    'attribute_verification': {
+                        'verified': [],
+                        'unverified': [],
+                        'inferred_only': []
+                    },
+                    'search_progress': {
+                        'search_status': 'not_started',
+                        'evidence': '',
+                        'updated_subgoal': 'Search for the target product'
+                    },
+                    'exploration_state': {
+                        'queries_tried': [],
+                        'products_viewed': [],
+                        'options_selected': [],
+                        'tabs_clicked': []
+                    }
+                }
+                self.step_counts[i] = 0
+        else:
+            # initialize belief states with tasks (original logic)
+            env_ids = list(range(len(infos)))
+            try:
+                self.belief_mgr.reset(env_ids=env_ids, task_desc=self.tasks)
+            except Exception:
+                self.belief_mgr.reset(env_ids=env_ids, task_desc=None)
+
+        # Store infos for first step's projection (needed for available actions in ReBel)
+        self._last_infos = infos
+
         return observations, infos
 
     def step(self, text_actions: List[str]):
-        actions, valids = self.projection_f(text_actions)
-        next_obs, rewards, dones, infos = self.envs.step(actions)
+        full_output = copy.deepcopy(text_actions)
 
+        if self.use_rebel:
+            # ReBel mode: 4-value projection
+            avail_actions = [info.get('available_actions', {}) if isinstance(info, dict) else {}
+                           for info in self._last_infos] if hasattr(self, '_last_infos') else [{}] * len(text_actions)
+            actions, valids, beliefs, action_available = self.projection_f(text_actions, avail_actions)
+        else:
+            actions, valids = self.projection_f(text_actions)
+            beliefs = [''] * len(actions)
+            action_available = [False] * len(actions)
+
+        next_obs, rewards, dones, infos = self.envs.step(actions)
         next_obs = self.format_obs(next_obs)
 
-        self.save_to_history_buffer(self.pre_text_obs, actions)
+        self.save_to_history_buffer(self.pre_text_obs, actions, full_output, beliefs)
         self.pre_text_obs = next_obs
 
         next_observations = {
@@ -989,37 +1204,188 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
             'image': None,
             'anchor': next_obs.copy()
         }
-        # add action_valid to infos
+
+        # Process each environment
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
-            # update belief state and attach snapshot
-            try:
-                anchor_obs = self.pre_text_obs[i]
-                self.belief_mgr.step_update(
-                    env_id=i,
-                    observation=anchor_obs,
-                    action=actions[i],
-                    info=info,
-                    reward=float(rewards[i]),
-                )
-                snap = self.belief_mgr.snapshot(i)
-                info['belief'] = {
-                    'step_idx': snap.step_idx,
-                    'world_model': snap.world_model,
-                    'task_progress': snap.task_progress,
-                    'exploration_map': {
-                        'visited_rooms': list(snap.exploration_map.get('visited_rooms', [])),
-                        'visited_objects': list(snap.exploration_map.get('visited_objects', [])),
-                    },
-                    'notes': snap.notes,
-                }
-            except Exception:
-                pass
+            info['action_available'] = to_numpy(action_available[i])
+
+            if self.use_rebel and i in self.ground_truth_trackers:
+                # Update ground truth tracker
+                self.ground_truth_trackers[i].update_from_observation(next_obs[i], actions[i], info)
+                ground_truth = self.ground_truth_trackers[i].get_ground_truth_state()
+
+                # Parse belief state from model output
+                belief_state = self.belief_parser.parse_belief(full_output[i])
+
+                if belief_state:
+                    step = len(self.buffers[i])
+                    success = info.get('won', False)
+                    is_format_valid = bool(valids[i])
+                    is_action_available = bool(action_available[i])
+
+                    intrinsic_reward, breakdown = self.reward_calculator.calculate_total_intrinsic_reward(
+                        belief_state=belief_state,
+                        ground_truth=ground_truth,
+                        step=step,
+                        done=dones[i],
+                        success=success,
+                        is_format_valid=is_format_valid,
+                        is_action_available=is_action_available
+                    )
+
+                    if self.use_result_reward:
+                        rewards[i] = float(rewards[i]) + intrinsic_reward
+                    else:
+                        rewards[i] = intrinsic_reward
+
+                    info['rebel_rewards'] = breakdown
+                    info['rebel_intrinsic_reward'] = intrinsic_reward
+                    info['belief_state'] = belief_state
+                    info['ground_truth_state'] = ground_truth
+
+                    self._update_cumulative_belief(i, belief_state)
+                    self.step_counts[i] = self.step_counts.get(i, 0) + 1
+                else:
+                    is_format_valid = bool(valids[i])
+                    is_action_available = bool(action_available[i])
+                    r_format = self.reward_calculator.calculate_format_reward(
+                        is_format_valid=is_format_valid,
+                        is_action_available=is_action_available
+                    )
+                    intrinsic_reward = self.reward_calculator.delta * r_format
+
+                    if self.use_result_reward:
+                        rewards[i] = float(rewards[i]) + intrinsic_reward
+                    else:
+                        rewards[i] = intrinsic_reward
+
+                    info['rebel_rewards'] = {
+                        'r_consistency': 0.0, 'r_progress': 0.0,
+                        'r_exploration': 0.0, 'r_format': r_format,
+                        'r_intrinsic_total': intrinsic_reward
+                    }
+                    info['rebel_intrinsic_reward'] = intrinsic_reward
+                    info['belief_state'] = None
+                    info['ground_truth_state'] = ground_truth
+            elif not self.use_rebel:
+                # Original belief manager logic
+                try:
+                    anchor_obs = self.pre_text_obs[i]
+                    self.belief_mgr.step_update(
+                        env_id=i, observation=anchor_obs,
+                        action=actions[i], info=info, reward=float(rewards[i]),
+                    )
+                    snap = self.belief_mgr.snapshot(i)
+                    info['belief'] = {
+                        'step_idx': snap.step_idx,
+                        'world_model': snap.world_model,
+                        'task_progress': snap.task_progress,
+                        'exploration_map': {
+                            'visited_rooms': list(snap.exploration_map.get('visited_rooms', [])),
+                            'visited_objects': list(snap.exploration_map.get('visited_objects', [])),
+                        },
+                        'notes': snap.notes,
+                    }
+                except Exception:
+                    pass
+
+        # Store infos for next step's projection (needed for available actions)
+        self._last_infos = infos
 
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)
-
         return next_observations, rewards, dones, infos
+
+    def _update_cumulative_belief(self, env_id: int, belief_state: Dict[str, Any]):
+        """Update cumulative belief state from parsed belief update"""
+        if env_id not in self.cumulative_beliefs:
+            return
+
+        cum = self.cumulative_beliefs[env_id]
+
+        # Update product understanding
+        pu = belief_state.get('product_understanding', {})
+        if isinstance(pu, dict):
+            if 'target_attributes' in pu and isinstance(pu['target_attributes'], dict):
+                cum['product_understanding']['target_attributes'].update(pu['target_attributes'])
+            if 'current_product_match' in pu:
+                cum['product_understanding']['current_product_match'] = str(pu['current_product_match'])
+            if 'price_constraint' in pu:
+                cum['product_understanding']['price_constraint'] = str(pu['price_constraint'])
+
+        # Update attribute_verification
+        av = belief_state.get('attribute_verification', {})
+        if isinstance(av, dict):
+            if 'attribute_verification' not in cum:
+                cum['attribute_verification'] = {'verified': [], 'unverified': [], 'inferred_only': []}
+            cav = cum['attribute_verification']
+
+            # Merge verified: deduplicate by attribute name
+            new_verified = av.get('verified', [])
+            if isinstance(new_verified, list):
+                existing_attrs = {v.get('attribute', '') for v in cav['verified'] if isinstance(v, dict)}
+                for item in new_verified:
+                    if isinstance(item, dict):
+                        attr_name = item.get('attribute', '')
+                        if attr_name and attr_name not in existing_attrs:
+                            cav['verified'].append(item)
+                            existing_attrs.add(attr_name)
+
+            verified_attrs = {v.get('attribute', '') for v in cav['verified'] if isinstance(v, dict)}
+
+            # Merge unverified and remove verified ones
+            new_unverified = av.get('unverified', [])
+            if isinstance(new_unverified, list):
+                for item in new_unverified:
+                    if isinstance(item, str) and item not in cav['unverified']:
+                        cav['unverified'].append(item)
+            cav['unverified'] = [u for u in cav['unverified'] if u not in verified_attrs]
+
+            # Merge inferred_only and remove verified ones
+            new_inferred = av.get('inferred_only', [])
+            if isinstance(new_inferred, list):
+                existing_inferred = {io.get('attribute', '') for io in cav['inferred_only'] if isinstance(io, dict)}
+                for item in new_inferred:
+                    if isinstance(item, dict):
+                        attr_name = item.get('attribute', '')
+                        if attr_name and attr_name not in existing_inferred:
+                            cav['inferred_only'].append(item)
+                            existing_inferred.add(attr_name)
+            cav['inferred_only'] = [
+                io for io in cav['inferred_only']
+                if isinstance(io, dict) and io.get('attribute', '') not in verified_attrs
+            ]
+
+        # Update search progress
+        sp = belief_state.get('search_progress', {})
+        if isinstance(sp, dict):
+            if 'search_status' in sp:
+                cum['search_progress']['search_status'] = str(sp['search_status'])
+            if 'evidence' in sp:
+                cum['search_progress']['evidence'] = str(sp['evidence'])
+            if 'updated_subgoal' in sp:
+                cum['search_progress']['updated_subgoal'] = str(sp['updated_subgoal'])
+
+        # Update exploration state (accumulate lists)
+        es = belief_state.get('exploration_state', {})
+        if isinstance(es, dict):
+            for key in ['queries_tried', 'products_viewed', 'options_selected', 'tabs_clicked']:
+                if key in es and isinstance(es[key], list):
+                    if key not in cum['exploration_state']:
+                        cum['exploration_state'][key] = []
+                    for item in es[key]:
+                        if item and item not in cum['exploration_state'][key]:
+                            cum['exploration_state'][key].append(item)
+
+    def _format_belief_state_for_prompt(self, env_id: int) -> str:
+        """Format cumulative belief state for inclusion in prompts"""
+        if env_id not in self.cumulative_beliefs:
+            return "No belief state available."
+
+        cum = self.cumulative_beliefs[env_id]
+        import json
+        return json.dumps(cum, indent=2, ensure_ascii=False)
 
     def extract_task(self, text_obs: List[str]):
         tasks = []
@@ -1028,22 +1394,12 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
             assert parts[1]=='Instruction:'
             tasks.append(parts[2])
         return tasks
-    
+
     def format_obs(self, text_obs):
-        postprocess_text_obs = []
-        for i in range(len(text_obs)):
-            parts = text_obs[i].split(" [SEP] ")
-            # the index of self.tasks[i] in parts
-            try:
-                index = parts.index(self.tasks[i])
-                reformatted_obs = " [SEP] ".join(f"'{p}'" for p in parts[index+1:])
-            except:
-                reformatted_obs = text_obs[i]
+        # Return raw observations as-is to match SFT training data format.
+        # SFT data uses the raw WebShop observation strings without reformatting.
+        return list(text_obs)
 
-            postprocess_text_obs.append(reformatted_obs)
-
-        return postprocess_text_obs
-    
     def format_avail_actions(self, avail):
         actions = []
 
@@ -1059,26 +1415,51 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
 
         return actions
 
-    def save_to_history_buffer(self, text_obs, actions):
+    def save_to_history_buffer(self, text_obs, actions, full_output=None, beliefs=None):
         for i in range(len(actions)):
-            self.buffers[i].append({'text_obs': text_obs[i], 'action': actions[i], "full_output": ""})
-            
-    def build_text_obs(self, text_obs: List[str], infos: List[List[str]], init: bool = False, history_length: int = 2) -> List[str]:
+            self.buffers[i].append({
+                'text_obs': text_obs[i],
+                'action': actions[i],
+                'full_output': full_output[i] if full_output else "",
+                'belief': beliefs[i] if beliefs and i < len(beliefs) else None
+            })
+
+    def build_text_obs(self, text_obs: List[str], infos: List[List[str]], init: bool = False, history_length: int = 5) -> List[str]:
         """
         This function builds the text observation for the agent.
         """
         postprocess_text_obs = []
+
+        # Select template based on ReBel mode
+        if self.use_rebel:
+            from agent_system.environments.prompts.webshop_rebel_prompts import (
+                WEBSHOP_REBEL_TEMPLATE_NO_HIS_RL,
+                WEBSHOP_REBEL_TEMPLATE_RL
+            )
+            _TEMPLATE_NO_HIS = WEBSHOP_REBEL_TEMPLATE_NO_HIS_RL
+            _TEMPLATE = WEBSHOP_REBEL_TEMPLATE_RL
+        else:
+            _TEMPLATE_NO_HIS = WEBSHOP_TEMPLATE_NO_HIS
+            _TEMPLATE = WEBSHOP_TEMPLATE
+
         for i in range(len(text_obs)):
-            
+
             available_actions = self.format_avail_actions(infos[i]['available_actions'])
             reformatted_available_actions = "\n".join(f"'{s}'," for s in available_actions)
 
             if init or history_length <= 0:
-                obs = WEBSHOP_TEMPLATE_NO_HIS.format(
-                    task_description=self.tasks[i],
-                    current_observation=text_obs[i],
-                    available_actions=reformatted_available_actions
-                )
+                if self.use_rebel:
+                    obs = _TEMPLATE_NO_HIS.format(
+                        task_description=self.tasks[i],
+                        current_observation=text_obs[i],
+                        admissible_actions=reformatted_available_actions
+                    )
+                else:
+                    obs = _TEMPLATE_NO_HIS.format(
+                        task_description=self.tasks[i],
+                        current_observation=text_obs[i],
+                        available_actions=reformatted_available_actions
+                    )
             else:
                 # Get last `history_length` steps
                 recent_history = self.buffers[i][-history_length:]
@@ -1090,23 +1471,47 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
                     action = record["action"]
                     env_obs = record["text_obs"]
                     action_history += f"\n[Observation {step_number}: '{env_obs}', Action {step_number}: '{action}']"
-                
-                obs = WEBSHOP_TEMPLATE.format(
-                    task_description=self.tasks[i],
-                    step_count=len(self.buffers[i]),
-                    history_length=valid_history_length,
-                    action_history=action_history.strip(),
-                    current_step=len(self.buffers[i]) + 1,
-                    current_observation=text_obs[i],
-                    available_actions=reformatted_available_actions
-                )
-                if len(obs) > 13000:
-                    print(f"Warning len(obs)={len(obs)} is too long")
-                    obs = WEBSHOP_TEMPLATE_NO_HIS.format(
+
+                if self.use_rebel:
+                    # Get cumulative belief state for ReBel
+                    belief_state_str = self._format_belief_state_for_prompt(i)
+                    planning = self.cumulative_beliefs.get(i, {}).get('search_progress', {}).get('updated_subgoal', 'N/A')
+
+                    obs = _TEMPLATE.format(
                         task_description=self.tasks[i],
+                        step_count=len(self.buffers[i]),
+                        history_length=valid_history_length,
+                        action_history=action_history.strip(),
+                        current_step=len(self.buffers[i]) + 1,
+                        current_observation=text_obs[i],
+                        admissible_actions=reformatted_available_actions,
+                        current_belief_state=belief_state_str,
+                        planning=planning
+                    )
+                else:
+                    obs = _TEMPLATE.format(
+                        task_description=self.tasks[i],
+                        step_count=len(self.buffers[i]),
+                        history_length=valid_history_length,
+                        action_history=action_history.strip(),
+                        current_step=len(self.buffers[i]) + 1,
                         current_observation=text_obs[i],
                         available_actions=reformatted_available_actions
                     )
+                if len(obs) > 13000:
+                    print(f"Warning len(obs)={len(obs)} is too long")
+                    if self.use_rebel:
+                        obs = _TEMPLATE_NO_HIS.format(
+                            task_description=self.tasks[i],
+                            current_observation=text_obs[i],
+                            admissible_actions=reformatted_available_actions
+                        )
+                    else:
+                        obs = _TEMPLATE_NO_HIS.format(
+                            task_description=self.tasks[i],
+                            current_observation=text_obs[i],
+                            available_actions=reformatted_available_actions
+                        )
 
             postprocess_text_obs.append(obs)
 
@@ -1118,9 +1523,17 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
             if batch_item['active_masks']:
                 info = total_infos[batch_idx][i]
                 won_value = float(info['won'])
-                score_value = float(info['task_score'])
+                score_value = float(info.get('task_score', 0.0))
                 success['success_rate'].append(won_value)
                 success['webshop_task_score (not success_rate)'].append(score_value)
+                # Finer-grained score buckets for diagnosing reward distribution
+                success['webshop_score_ge_0.3'].append(float(score_value >= 0.3))
+                success['webshop_score_ge_0.5'].append(float(score_value >= 0.5))
+                success['webshop_score_ge_0.8'].append(float(score_value >= 0.8))
+                success['webshop_score_eq_1.0'].append(float(score_value >= 1.0 - 1e-6))
+                # Track whether the episode actually terminated (agent clicked buy now)
+                last_info = total_infos[batch_idx][i]
+                success['webshop_bought'].append(float(last_info.get('task_score', 0.0) > 0))
                 return
 
 
@@ -1252,13 +1665,24 @@ def make_envs(config):
         return envs, val_envs
 
     elif "webshop" in config.env.env_name.lower():
-        from agent_system.environments.env_package.webshop import build_webshop_envs, webshop_projection
+        from agent_system.environments.env_package.webshop import build_webshop_envs, webshop_projection, webshop_projection_rebel
         _envs = build_webshop_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True)
         _val_envs = build_webshop_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False)
 
-        projection_f = partial(webshop_projection)
-        envs = WebshopEnvironmentManager(_envs, projection_f, config.env.env_name)
-        val_envs = WebshopEnvironmentManager(_val_envs, projection_f, config.env.env_name)
+        # Check if ReBel is enabled
+        use_rebel = (hasattr(config, 'algorithm') and
+                    hasattr(config.algorithm, 'rebel') and
+                    getattr(config.algorithm.rebel, 'enable', False))
+
+        if use_rebel:
+            print("[DEBUG make_envs] WebShop: Using ReBel projection (<belief>/<action>)")
+            projection_f = partial(webshop_projection_rebel)
+        else:
+            print("[DEBUG make_envs] WebShop: Using default projection (<think>/<action>)")
+            projection_f = partial(webshop_projection)
+
+        envs = WebshopEnvironmentManager(_envs, projection_f, config.env.env_name, config)
+        val_envs = WebshopEnvironmentManager(_val_envs, projection_f, config.env.env_name, config)
         import time
         time.sleep((config.data.train_batch_size * group_n + config.data.val_batch_size) * 0.1) # wait for the envs to be ready
         return envs, val_envs

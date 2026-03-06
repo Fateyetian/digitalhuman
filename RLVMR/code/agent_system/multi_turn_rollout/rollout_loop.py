@@ -31,6 +31,125 @@ class TrajectoryCollector:
         self.tokenizer = tokenizer
         self.processor = processor
 
+    def _save_trajectories_if_enabled(
+        self,
+        total_batch_list: List[List[Dict]],
+        total_infos: List[List[Dict]],
+        episode_rewards: np.ndarray,
+        episode_lengths: np.ndarray,
+        is_train: bool = True,
+        envs=None,
+    ):
+        """Save trajectories to disk if enabled in config.
+
+        Saves both training and validation rollouts. Training saves are limited
+        to max_save_per_call trajectories per call to avoid excessive I/O.
+        """
+        if not getattr(self.config.trainer, 'save_trajectories', False):
+            return
+
+        import json
+        import os
+        import re
+        from datetime import datetime
+
+        save_dir = getattr(self.config.trainer, 'trajectory_save_dir', '/tmp/trajectories')
+        os.makedirs(save_dir, exist_ok=True)
+        mode = "train" if is_train else "val"
+
+        # Limit training saves to avoid disk overflow (val saves all)
+        max_save = 128 if is_train else len(total_batch_list)
+        indices = list(range(min(max_save, len(total_batch_list))))
+
+        # Derive experiment name from save_dir (last component) for group_id prefix
+        exp_tag = os.path.basename(save_dir)  # e.g. "20260306_M5_rebel_full_seed42"
+
+        # Get task list from env if available
+        env_tasks = []
+        if envs is not None and hasattr(envs, 'tasks'):
+            env_tasks = list(envs.tasks)
+
+        trajectories = []
+        for env_idx in indices:
+            traj = total_batch_list[env_idx]
+            infos_seq = total_infos[env_idx] if env_idx < len(total_infos) else []
+            task = env_tasks[env_idx] if env_idx < len(env_tasks) else ''
+
+            traj_data = []
+            for step_idx, (step, info) in enumerate(zip(traj, infos_seq)):
+                # Get action text (decoded model response)
+                action_text = info.get('_action_text', '')
+                next_obs_text = info.get('_next_obs_text', '')
+
+                # Extract action tag content
+                action_match = re.search(r'<action>\s*(.*?)\s*</action>', action_text, re.DOTALL)
+                action = action_match.group(1).strip() if action_match else action_text[:100]
+
+                step_reward = step.get('rewards', 0.0)
+                if hasattr(step_reward, 'item'):
+                    step_reward = float(step_reward.item())
+                elif hasattr(step_reward, '__float__'):
+                    step_reward = float(step_reward)
+                else:
+                    try:
+                        step_reward = float(step_reward)
+                    except:
+                        step_reward = 0.0
+
+                traj_data.append({
+                    "step": step_idx + 1,
+                    "obs": next_obs_text[:500] if next_obs_text else '',
+                    "response": action_text[:2000] if action_text else '',
+                    "action": action,
+                    "reward": step_reward,
+                    "is_action_valid": bool(info.get('is_action_valid', True)),
+                    "won": bool(info.get('won', False)),
+                })
+
+            # Derive task from first step if not available from env
+            if not task and traj_data:
+                for step_d in traj_data[:1]:
+                    r = step_d.get('response', '')
+                    if 'Task:' in r:
+                        t_start = r.find('Task:') + 5
+                        t_end = r.find('\n', t_start)
+                        task = r[t_start:t_end].strip() if t_end > t_start else r[t_start:t_start+100]
+
+            total_reward = float(episode_rewards[env_idx]) if env_idx < len(episode_rewards) else 0.0
+            group_id = task[:60] if task else f'group_{env_idx}'
+            # done=True means the env terminated (agent clicked Buy Now)
+            # won=True means the purchase actually matched the task (reward >= threshold)
+            episode_done = any(step.get('won', False) for step in traj_data)
+            episode_bought = any(step.get('action', '').lower().strip() == 'click[buy now]' or
+                                 'buy now' in step.get('action', '').lower()
+                                 for step in traj_data)
+
+            trajectories.append({
+                "task": task,
+                "done": "True" if episode_bought else "False",
+                "won": episode_done,
+                "total_reward": total_reward,
+                "group_id": group_id,
+                "exp_tag": exp_tag,
+                "traj_index": env_idx,
+                "data": traj_data,
+            })
+
+        if not trajectories:
+            return
+
+        # Append to JSONL file (one line per trajectory)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"rollout_{mode}_{timestamp}.jsonl"
+        filepath = os.path.join(save_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for traj in trajectories:
+                f.write(json.dumps(traj, ensure_ascii=False) + '\n')
+
+        success_count = sum(1 for t in trajectories if t.get('won', False))
+        print(f"[TrajectoryCollector] Saved {len(trajectories)} {mode} trajectories "
+              f"({success_count} success) to {filepath}")
+
     def preprocess_single_sample(
         self,
         item: int,
@@ -79,24 +198,34 @@ class TrajectoryCollector:
         if obs_text is not None:
             obs_content += obs_text
 
-        # ALFWorld system prompt - task-relevant context
-        system_prompt = (
-            "You are an expert embodied agent operating in the ALFRED environment. "
-            "Your goal is to complete household tasks by navigating, interacting with objects, "
-            "and maintaining accurate beliefs about the world state. "
-            "Always output your response in the required format with <belief>, <reasoning>, and <action> tags."
-        )
-
-        chat = np.array([
-            {
-                "content": system_prompt,
-                "role": "system",
-            },
-            {
-                "content": obs_content,
-                "role": "user",
-            }
-        ])
+        # Environment-aware system prompt
+        env_name = getattr(self.config.env, 'env_name', '').lower()
+        if 'webshop' in env_name:
+            # WebShop SFT was trained without system prompt (user-only chat template).
+            # Match that format for RL rollout to avoid distribution shift.
+            chat = np.array([
+                {
+                    "content": obs_content,
+                    "role": "user",
+                }
+            ])
+        else:
+            system_prompt = (
+                "You are an expert embodied agent operating in the ALFRED environment. "
+                "Your goal is to complete household tasks by navigating, interacting with objects, "
+                "and maintaining accurate beliefs about the world state. "
+                "Always output your response in the required format."
+            )
+            chat = np.array([
+                {
+                    "content": system_prompt,
+                    "role": "system",
+                },
+                {
+                    "content": obs_content,
+                    "role": "user",
+                }
+            ])
 
         # Apply chat template
         prompt_with_chat_template = self.tokenizer.apply_chat_template(
@@ -412,14 +541,14 @@ class TrajectoryCollector:
                         # Use high-capability teacher model for planning
                         teacher_config = getattr(self.config.env, 'teacher_planner', None)
                         if teacher_config:
-                            teacher_model = getattr(teacher_config, 'model', "claude-opus-4-5-20251101")
-                            teacher_api_base = getattr(teacher_config, 'api_base', "https://api.yourapi.cn")
-                            teacher_api_key = getattr(teacher_config, 'api_key', "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV")
+                            teacher_model = getattr(teacher_config, 'model', "claude-sonnet-4-6-cc")
+                            teacher_api_base = getattr(teacher_config, 'api_base', "https://www.dmxapi.cn")
+                            teacher_api_key = getattr(teacher_config, 'api_key', "sk-4n74DJ6yiFNurN9Yq3JpzrxDvuUzN0vQQmh8s6kIl6IHrLEh")
                         else:
                             # Default values
-                            teacher_model = "claude-opus-4-5-20251101"
-                            teacher_api_base = "https://api.yourapi.cn"
-                            teacher_api_key = "sk-sIY1HNPxgl4liDRw5zZ6ivUlvzBKLL9mtkhBOwulBarG9LKV"
+                            teacher_model = "claude-sonnet-4-6-cc"
+                            teacher_api_base = "https://www.dmxapi.cn"
+                            teacher_api_key = "sk-4n74DJ6yiFNurN9Yq3JpzrxDvuUzN0vQQmh8s6kIl6IHrLEh"
 
                         teacher_planner = get_teacher_planner(
                             model=teacher_model,
@@ -537,6 +666,10 @@ class TrajectoryCollector:
 
             for i in range(batch_size):
                 total_batch_list[i].append(batch_list[i])
+                # Attach decoded action text and next obs text for trajectory saving
+                infos[i]['_action_text'] = text_actions[i] if i < len(text_actions) else ''
+                anchor = next_obs.get('anchor') if isinstance(next_obs, dict) else None
+                infos[i]['_next_obs_text'] = anchor[i] if isinstance(anchor, (list, np.ndarray)) and i < len(anchor) else ''
                 total_infos[i].append(infos[i])
 
             # Update done states
@@ -552,9 +685,19 @@ class TrajectoryCollector:
         success: Dict[str, np.ndarray] = envs.success_evaluator(
                     total_infos=total_infos,
                     total_batch_list=total_batch_list,
-                    episode_rewards=episode_rewards, 
+                    episode_rewards=episode_rewards,
                     episode_lengths=episode_lengths,
                     )
+
+        # Save trajectories if enabled
+        self._save_trajectories_if_enabled(
+            total_batch_list=total_batch_list,
+            total_infos=total_infos,
+            episode_rewards=episode_rewards,
+            episode_lengths=episode_lengths,
+            is_train=True,
+            envs=envs,
+        )
 
         return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, total_infos
 
@@ -739,12 +882,24 @@ class TrajectoryCollector:
         if hasattr(self.config.algorithm, 'rebel') and getattr(self.config.algorithm.rebel, 'enable', False):
             rebel_intrinsic_rewards = []
 
-            # V7: Import BeliefDeviationCalculator for belief deviation metrics
-            from agent_system.environments.env_package.alfworld import BeliefDeviationCalculator
-            belief_deviation_calc = BeliefDeviationCalculator()
+            # Determine environment type for env-agnostic dispatching
+            env_name = getattr(self.config.env, 'env_name', '').lower()
+            is_webshop = 'webshop' in env_name
 
-            # V11: Import semantic_belief_abstract for HiBO grouping
-            from rebel.hibo_grouping import semantic_belief_abstract
+            # V7: Import BeliefDeviationCalculator for belief deviation metrics (ALFWorld only)
+            belief_deviation_calc = None
+            if not is_webshop:
+                try:
+                    from agent_system.environments.env_package.alfworld import BeliefDeviationCalculator
+                    belief_deviation_calc = BeliefDeviationCalculator()
+                except ImportError:
+                    pass
+
+            # V11: Import the appropriate semantic_belief_abstract for HiBO grouping
+            if is_webshop:
+                from rebel.hibo_grouping import webshop_semantic_belief_abstract as semantic_belief_abstract
+            else:
+                from rebel.hibo_grouping import semantic_belief_abstract
 
             # V7: Collect belief deviation metrics
             belief_deviations = {
@@ -787,9 +942,9 @@ class TrajectoryCollector:
 
                     rebel_intrinsic_rewards.append(rebel_intrinsic)
 
-                    # V7: Compute belief deviation metrics
+                    # V7: Compute belief deviation metrics (ALFWorld only)
                     ground_truth = info.get('ground_truth_state', {})
-                    if ground_truth:
+                    if ground_truth and belief_deviation_calc is not None:
                         deviation_metrics = belief_deviation_calc.compute_total_belief_deviation(
                             belief_state=belief_state,
                             ground_truth=ground_truth

@@ -38,8 +38,8 @@ class TeacherPlanner:
 
     def __init__(
         self,
-        model: str = "claude-opus-4-5-20251101",
-        api_base: str = "https://api.yourapi.cn",
+        model: str = "claude-sonnet-4-6-cc",
+        api_base: str = "https://www.dmxapi.cn",
         api_key: Optional[str] = None,
         max_retries: int = 3,
         timeout: float = 60.0,
@@ -318,8 +318,8 @@ _teacher_planner: Optional[TeacherPlanner] = None
 
 
 def get_teacher_planner(
-    model: str = "claude-opus-4-5-20251101",
-    api_base: str = "https://api.yourapi.cn",
+    model: str = "claude-sonnet-4-6-cc",
+    api_base: str = "https://www.dmxapi.cn",
     api_key: Optional[str] = None,
     **kwargs
 ) -> TeacherPlanner:
@@ -350,8 +350,8 @@ def get_teacher_planner(
 
 def generate_plans_with_teacher(
     planning_prompts: List[str],
-    model: str = "claude-opus-4-5-20251101",
-    api_base: str = "https://api.yourapi.cn",
+    model: str = "claude-sonnet-4-6-cc",
+    api_base: str = "https://www.dmxapi.cn",
     api_key: Optional[str] = None,
 ) -> List[Optional[dict]]:
     """
