@@ -35,7 +35,7 @@ USE_BELIEF_DECAY=${USE_BELIEF_DECAY:-false}
 DECAY_METHOD=${DECAY_METHOD:-cosine}
 USE_ADAPTIVE_DECAY=${USE_ADAPTIVE_DECAY:-false}
 USE_DIFFERENTIAL_DECAY=${USE_DIFFERENTIAL_DECAY:-true}
-ROLLOUT_N=${ROLLOUT_N:-8}  # Reduced from 16: 16*16=256 procs caused OOM at ~epoch 20
+ROLLOUT_N=${ROLLOUT_N:-16}
 SAVE_TRAJECTORIES=${SAVE_TRAJECTORIES:-true}  # Save rollout trajectories for visualization
 
 export HF_HUB_OFFLINE=1
@@ -186,25 +186,41 @@ echo "-------------------------------------------------------------------"
 cd /root/testttt/RLVMR/code
 
 # ======================== Prepare Data ========================
+# val_batch_size=500 requires test.parquet to have exactly 500 rows.
+# Check row count and regenerate if needed.
+_EXPECTED_VAL_ROWS=500
+_TEST_PARQUET="$HOME/data/verl-agent/text/test.parquet"
+_NEED_REGEN=false
 if [ ! -f "$HOME/data/verl-agent/text/train.parquet" ]; then
+    _NEED_REGEN=true
+elif [ -f "$_TEST_PARQUET" ]; then
+    _ACTUAL_ROWS=$(python3 -c "import pandas as pd; print(len(pd.read_parquet('$_TEST_PARQUET')))" 2>/dev/null || echo 0)
+    if [ "$_ACTUAL_ROWS" != "$_EXPECTED_VAL_ROWS" ]; then
+        echo "[Data] test.parquet has ${_ACTUAL_ROWS} rows (need ${_EXPECTED_VAL_ROWS}). Regenerating..."
+        _NEED_REGEN=true
+    fi
+else
+    _NEED_REGEN=true
+fi
+if [ "$_NEED_REGEN" = "true" ]; then
     python3 -m examples.data_preprocess.prepare \
         --mode 'text' \
         --train_data_size 16 \
-        --val_data_size 128 2>/dev/null || true
+        --val_data_size ${_EXPECTED_VAL_ROWS} 2>/dev/null || true
 fi
 
 # ======================== Build Training Command ========================
 # Response length: SFT data averages ~1054 tokens (p90=1436).
 # Previously 512 which truncated 99.8% of outputs before <action> tag.
-MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-1536}
-MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-3000}   # webshop prompts avg ~960, max ~1400
+MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-2048}
+MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-5120}   # webshop prompts: search page ~1500, detail page ~3500, history累积可达4000+
 
 BASE_ARGS=(
     "algorithm.adv_estimator=${ADV_ESTIMATOR}"
     "data.train_files=$HOME/data/verl-agent/text/train.parquet"
     "data.val_files=$HOME/data/verl-agent/text/test.parquet"
     "data.train_batch_size=16"
-    "data.val_batch_size=128"
+    "data.val_batch_size=500"
     "data.max_prompt_length=${MAX_PROMPT_LENGTH}"
     "data.max_response_length=${MAX_RESPONSE_LENGTH}"
     "data.filter_overlong_prompts=True"
@@ -231,11 +247,10 @@ BASE_ARGS=(
     "actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=20480"
     "actor_rollout_ref.rollout.tensor_model_parallel_size=1"
     "actor_rollout_ref.rollout.name=vllm"
-    "actor_rollout_ref.rollout.gpu_memory_utilization=0.55"
+    "actor_rollout_ref.rollout.gpu_memory_utilization=0.8"
     "actor_rollout_ref.rollout.enable_chunked_prefill=False"
     "actor_rollout_ref.rollout.enforce_eager=False"
     "actor_rollout_ref.rollout.free_cache_engine=False"
-    "+actor_rollout_ref.rollout.repetition_penalty=1.2"
     "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8"
     "actor_rollout_ref.ref.fsdp_config.param_offload=True"
     "algorithm.use_kl_in_reward=False"
@@ -245,7 +260,7 @@ BASE_ARGS=(
     "env.env_name=Webshop"
     "env.seed=${SEED}"
     "env.max_steps=15"
-    "env.rollout.n=${ROLLOUT_N:-8}"
+    "env.rollout.n=${ROLLOUT_N}"
     "trainer.critic_warmup=0"
     "trainer.logger=['console','swanlab']"
     "trainer.project_name=ReBel_V11_WebShop"

@@ -1055,9 +1055,11 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
 
         planning_prompts = []
         for i in range(len(self.tasks)):
+            # NOTE: 【Task Description】 marker is required by TeacherPlanner's cache
+            # key extraction regex. Do NOT remove or rename this marker.
             prompt = (
-                f"You are an expert online shopping agent. "
-                f"Your task is to: {self.tasks[i]}\n\n"
+                f"You are an expert online shopping agent.\n\n"
+                f"【Task Description】\n{self.tasks[i]}\n\n"
                 f"Current observation:\n{self.pre_text_obs[i]}\n\n"
                 f"Create a step-by-step plan as JSON with keys: "
                 f"main_goal, target_attributes, search_strategy, plan_steps, success_criteria."
@@ -1470,7 +1472,15 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
                     step_number = start_index + j + 1
                     action = record["action"]
                     env_obs = record["text_obs"]
-                    action_history += f"\n[Observation {step_number}: '{env_obs}', Action {step_number}: '{action}']"
+                    if self.use_rebel:
+                        # ReBel mode: actions-only history. The cumulative belief state already
+                        # encodes what was observed (exploration_state tracks queries_tried,
+                        # products_viewed, options_selected, tabs_clicked). Including full
+                        # WebShop page observations (500-1500 tokens each) is redundant and
+                        # causes prompt length to exceed token limits.
+                        action_history += f"\n[Step {step_number}: {action}]"
+                    else:
+                        action_history += f"\n[Observation {step_number}: '{env_obs}', Action {step_number}: '{action}']"
 
                 if self.use_rebel:
                     # Get cumulative belief state for ReBel
@@ -1524,7 +1534,8 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
                 info = total_infos[batch_idx][i]
                 won_value = float(info['won'])
                 score_value = float(info.get('task_score', 0.0))
-                success['success_rate'].append(won_value)
+                # success_rate = score == 1.0 (GiGPO standard, fair comparison)
+                success['success_rate'].append(float(score_value >= 1.0 - 1e-6))
                 success['webshop_task_score (not success_rate)'].append(score_value)
                 # Finer-grained score buckets for diagnosing reward distribution
                 success['webshop_score_ge_0.3'].append(float(score_value >= 0.3))

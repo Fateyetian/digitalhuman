@@ -163,28 +163,59 @@ def merge_belief_update(
 # Part 2: Teacher LLM Interaction
 # ============================================================================
 
+# WebShop-specific failure observation patterns (equivalent to ALFWorld "Nothing happens")
+_WEBSHOP_FAILURE_PATTERNS = [
+    "sorry, nothing was found",
+    "no products were found",
+    "no results found",
+    "no matching",
+    "could not find",
+    "0 results",
+    "no items found",
+]
+
+
+def _is_failure_observation(obs: str) -> bool:
+    """Detect WebShop failure observations: search returned no results, invalid action, etc."""
+    obs_lower = obs.lower()
+    return any(pat in obs_lower for pat in _WEBSHOP_FAILURE_PATTERNS)
+
+
 def construct_annotation_prompt(
     task_desc: str,
     current_obs: str,
     prev_belief: Dict[str, Any],
     ground_truth_action: str,
     admissible_actions: List[str] = None,
-    action_history: List[str] = None
+    action_history: List[str] = None,
+    obs_history: List[str] = None,
+    is_obs_failure: bool = False
 ) -> Tuple[str, str]:
     """Construct the hindsight annotation prompt for Teacher LLM."""
     prev_belief_json = json.dumps(prev_belief, indent=2, ensure_ascii=False)
     admissible_str = ", ".join(admissible_actions[:20]) if admissible_actions else "N/A"
     obs_display = current_obs if len(current_obs) < 800 else current_obs[:800] + "..."
 
-    # Build action history summary for context
+    # Prepend failure note so Teacher LLM correctly interprets the observation context
+    if is_obs_failure:
+        obs_display = "[NOTE: This observation indicates a search failure — no matching products were returned. The search_status must remain 'searching'.]\n" + obs_display
+
+    # Build trajectory summary: (obs snippet → action) pairs for richer context
     action_history_str = ""
     if action_history:
-        action_history_str = "\n".join(
-            f"  Step {i+1}: {a}" for i, a in enumerate(action_history)
-        )
+        if obs_history and len(obs_history) == len(action_history):
+            lines = []
+            for i, (o, a) in enumerate(zip(obs_history, action_history)):
+                obs_snippet = o[:120] + "..." if len(o) > 120 else o
+                lines.append(f"  Step {i+1}: obs='{obs_snippet}' → action='{a}'")
+            action_history_str = "\n".join(lines)
+        else:
+            action_history_str = "\n".join(
+                f"  Step {i+1}: {a}" for i, a in enumerate(action_history)
+            )
 
-    system_prompt = """You are an expert in e-commerce shopping reasoning. Your goal is to simulate the internal 'thought process' of an intelligent shopping agent.
-You must maintain a consistent understanding and make logical decisions based ON ONLY what has been observed up to the current moment."""
+    # Brief system prompt — detailed instructions are already in the template body
+    system_prompt = "You are an expert e-commerce shopping agent annotator. Output valid JSON only — no extra commentary outside the JSON block."
 
     user_prompt = WEBSHOP_REBEL_TAGGING_TEMPLATE.format(
         task_description=task_desc,
@@ -239,8 +270,8 @@ def call_teacher_llm(
 
             parsed = json.loads(content)
 
-            required_fields = ["product_understanding", "search_progress",
-                             "exploration_state", "reasoning"]
+            required_fields = ["product_understanding", "attribute_verification",
+                             "search_progress", "exploration_state", "reasoning"]
             if all(field in parsed for field in required_fields):
                 # Safety net: if ready_to_buy but inferred_only is non-empty, downgrade
                 av = parsed.get("attribute_verification", {})
@@ -263,6 +294,8 @@ def call_teacher_llm(
 
         except json.JSONDecodeError as e:
             print(f"   JSON parse error (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                print(f"   Raw response: {content[:300]}")
         except Exception as e:
             print(f"   LLM call failed (attempt {attempt + 1}/{max_retries}): {e}")
 
@@ -422,6 +455,7 @@ def generate_webshop_rebel_dataset(
     global_belief = initialize_belief_state()
     rebel_conversations = []
     action_history = []  # Track all actions taken so far
+    obs_history = []     # Track observations corresponding to each action
 
     rebel_conversations.append({
         'from': 'human',
@@ -444,13 +478,20 @@ def generate_webshop_rebel_dataset(
     for step, (obs, action, avail_actions) in enumerate(pairs):
         input_belief_json = json.dumps(global_belief, indent=2, ensure_ascii=False)
 
+        # Detect failure observations (no results, invalid action, etc.)
+        is_obs_failure = _is_failure_observation(obs)
+        if is_obs_failure:
+            print(f"   Step {step}: Failure observation detected — search returned no results")
+
         system_prompt, user_prompt = construct_annotation_prompt(
             task_desc=task_description,
             current_obs=obs,
             prev_belief=global_belief,
             ground_truth_action=action,
             admissible_actions=avail_actions,
-            action_history=action_history
+            action_history=action_history,
+            obs_history=obs_history,
+            is_obs_failure=is_obs_failure
         )
 
         llm_output = call_teacher_llm(
@@ -514,7 +555,8 @@ def generate_webshop_rebel_dataset(
 
         global_belief = merge_belief_update(global_belief, belief_update)
 
-        # Record action in history for subsequent steps
+        # Record obs and action in history for subsequent steps
+        obs_history.append(obs)
         action_history.append(action)
 
         admissible_str = ", ".join(avail_actions) if avail_actions else "N/A"
@@ -576,6 +618,12 @@ def convert_to_coldstart_format(rebel_trajectory: Dict[str, Any]) -> List[Dict[s
 
     Returns list of {question, answer} dicts for each step.
     Cold-start format DOES NOT include admissible actions.
+
+    Mirrors ALFWorld's convert_to_coldstart_format strategy:
+    - Step 1:    Use WEBSHOP_REBEL_TEMPLATE_NO_HIS_CS (full instructional template,
+                 no prior belief, no admissible actions) — teaches format from scratch.
+    - Steps 2+:  Strip "Available Actions:" from the annotated human turn
+                 (compact format: task + obs + current_belief, no admissible actions).
     """
     conversations = rebel_trajectory.get('conversations', [])
     task = rebel_trajectory.get('task', 'Unknown task')
@@ -584,26 +632,45 @@ def convert_to_coldstart_format(rebel_trajectory: Dict[str, Any]) -> List[Dict[s
     step_num = 0
     for i in range(len(conversations)):
         turn = conversations[i]
-        if turn.get('loss') is False:
+        # Only process model output turns that compute loss (skip system messages and human turns)
+        if not (turn['from'] == 'gpt' and turn.get('loss') is True and '<belief>' in turn.get('value', '')):
             continue
 
-        if turn['from'] == 'gpt' and '<belief>' in turn.get('value', ''):
-            step_num += 1
-            # Get the preceding human turn
-            human_turn = conversations[i - 1] if i > 0 else None
-            if not human_turn or human_turn['from'] != 'human':
-                continue
+        step_num += 1
+        # Get the preceding human turn
+        human_turn = conversations[i - 1] if i > 0 else None
+        if not human_turn or human_turn['from'] != 'human':
+            continue
 
-            # Remove "Available Actions:" line for cold-start
-            human_text = human_turn['value']
+        human_text = human_turn['value']
+
+        if step_num == 1:
+            # First step: use the full instructional template.
+            # Extract the raw observation from the human turn.
+            obs_match = re.search(
+                r'Observation:\n(.*?)(?:\n\nCurrent Belief State:|\Z)',
+                human_text, re.DOTALL
+            )
+            if obs_match:
+                obs = obs_match.group(1).strip()
+            else:
+                print(f"   [convert_to_coldstart] WARNING: Could not extract obs from step 1 human turn; using full text as fallback")
+                obs = human_text
+            prompt = WEBSHOP_REBEL_TEMPLATE_NO_HIS_CS.format(
+                task_description=task,
+                current_observation=obs
+            )
+        else:
+            # Subsequent steps: strip "Available Actions:" from annotated human turn.
+            # Keeps: task description + observation + current belief state.
             lines = human_text.split('\n')
             filtered_lines = [line for line in lines if 'Available Actions:' not in line]
             prompt = '\n'.join(filtered_lines).strip()
 
-            coldstart_pairs.append({
-                'question': prompt,
-                'answer': turn['value']
-            })
+        coldstart_pairs.append({
+            'question': prompt,
+            'answer': turn['value']
+        })
 
     return coldstart_pairs
 

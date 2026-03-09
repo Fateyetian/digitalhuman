@@ -26,7 +26,10 @@ def _worker(remote, seed, env_kwargs):
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), 'webshop'))
     sys.path.append(project_root)
     from web_agent_site.envs import WebAgentTextEnv  # noqa: WPS433 (runtime import)
-    env_kwargs['seed'] = seed
+    # server_seed controls goal shuffling order (must be identical across all workers
+    # for filter_goals train/test split to be consistent). Falls back to per-worker seed.
+    server_seed = env_kwargs.pop('server_seed', seed)
+    env_kwargs['seed'] = server_seed
     env = gym.make('WebAgentTextEnv-v0', **env_kwargs)
 
     try:
@@ -44,15 +47,12 @@ def _worker(remote, seed, env_kwargs):
                 info['task_score'] = reward
 
                 # Use continuous reward scaled to [0, 10] for meaningful RL signal.
-                # Previously: binary (10 if perfect, 0 otherwise) which almost never
-                # triggered because get_reward() returns a continuous [0,1] score and
-                # exact 1.0 is extremely rare. This caused success_rate=0 throughout
-                # training and no RL gradient signal.
+                # Continuous reward preserves partial-credit signal so the policy can
+                # learn incrementally (better than binary 10/0 used in original GiGPO).
                 #
-                # "won" threshold at 0.5 for success_rate metric (used in logging and
-                # adaptive belief decay). Continuous reward preserves partial-credit
-                # signal so the policy can learn incrementally.
-                WIN_THRESHOLD = 0.5
+                # "won" uses score == 1.0 (GiGPO standard) for fair comparison.
+                # score >= 0.5 is also tracked separately as webshop_score_ge_0.5.
+                WIN_THRESHOLD = 1.0 - 1e-6
                 if done:
                     info['won'] = bool(reward >= WIN_THRESHOLD)
                     reward = reward * 10.0  # scale [0,1] -> [0,10]
@@ -272,6 +272,16 @@ class WebshopMultiProcessEnv(gym.Env):
 # Factory helper --------------------------------------------------------------
 # -----------------------------------------------------------------------------
 
+def _train_goal_filter(i, goal):
+    """Keep goals at index >= 500 (training split, GiGPO convention)."""
+    return i >= 500
+
+
+def _test_goal_filter(i, goal):
+    """Keep first 500 goals (test split, GiGPO convention)."""
+    return i < 500
+
+
 def build_webshop_envs(
     seed: int = 0,
     env_num: int = 1,
@@ -279,7 +289,26 @@ def build_webshop_envs(
     is_train: bool = True,
     env_kwargs: dict = None,
 ):
-    """Mirror *build_sokoban_envs* so higher‑level code can swap seamlessly."""
+    """Mirror *build_sokoban_envs* so higher‑level code can swap seamlessly.
+
+    Train/test split follows the GiGPO / original WebShop baseline convention:
+      - Test:  first 500 goals (indices 0-499 after fixed shuffle with server_seed=42)
+      - Train: goals from index 500 onward (~6410 goals for the 1k-product subset)
+    A fixed server_seed=42 ensures all worker processes shuffle goals identically,
+    making filter_goals produce the same split regardless of per-worker seed.
+    """
+    if env_kwargs is None:
+        env_kwargs = {'observation_mode': 'text', 'num_products': None}
+
+    # Fixed server_seed ensures all workers share the same goal shuffle order.
+    env_kwargs.setdefault('server_seed', 42)
+
+    # Train/test split aligned with GiGPO benchmark.
+    if is_train:
+        env_kwargs.setdefault('filter_goals', _train_goal_filter)
+    else:
+        env_kwargs.setdefault('filter_goals', _test_goal_filter)
+
     return WebshopMultiProcessEnv(
         seed=seed,
         env_num=env_num,

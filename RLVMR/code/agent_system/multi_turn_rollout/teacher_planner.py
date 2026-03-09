@@ -237,39 +237,54 @@ class TeacherPlanner:
         with self._stats_lock:
             self.stats['total_calls'] += batch_size
 
-        # Check cache first (both memory and disk)
+        # Step 1: Parse cache keys and check cache for all prompts.
         cache_hits = 0
+        # key2indices: cache_key -> list of all indices sharing that task
+        key2indices: Dict[str, list] = {}
         for i, prompt in enumerate(planning_prompts):
-            # Extract task description from prompt for cache key
             task_match = re.search(r'【Task Description】\s*\n(.*?)(?:\n\n|\n【)', prompt, re.DOTALL)
             if task_match:
                 task_desc = task_match.group(1).strip()
                 cache_key = self._get_cache_key(task_desc)
                 prompt_task_map[i] = (cache_key, task_desc)
+                key2indices.setdefault(cache_key, []).append(i)
 
-                # Check memory cache first, then disk
                 with self._cache_lock:
                     if cache_key in self._plan_cache:
                         results[i] = self._plan_cache[cache_key]
                         cache_hits += 1
-                        continue
-
-                prompts_to_call.append((i, prompt))
             else:
-                prompts_to_call.append((i, prompt))
                 prompt_task_map[i] = (None, "")
+                prompts_to_call.append((i, prompt))
 
         with self._stats_lock:
             self.stats['cache_hits'] += cache_hits
+
+        # Step 2: Batch-deduplicate — only call API for one representative per unique
+        # cache_key that is not already cached. Fan-out results to all duplicate indices.
+        # Example: 16 tasks × 16 rollouts = 256 prompts → at most 16 API calls.
+        seen_keys: set = set()
+        for i, prompt in [
+            (i, p) for i, p in enumerate(planning_prompts)
+            if prompt_task_map.get(i, (None,))[0] is not None
+            and results[i] is None  # not yet cached
+        ]:
+            cache_key = prompt_task_map[i][0]
+            if cache_key not in seen_keys:
+                seen_keys.add(cache_key)
+                prompts_to_call.append((i, prompt))
+            # else: duplicate — will be filled via fan-out after API call
 
         if not prompts_to_call:
             print(f"[TeacherPlanner] All {batch_size} plans loaded from cache!")
             return results
 
-        # Make parallel API calls
-        print(f"[TeacherPlanner] Generating {len(prompts_to_call)} new plans (batch: {batch_size}, cached: {cache_hits})")
+        unique_calls = len(prompts_to_call)
+        print(f"[TeacherPlanner] Generating {unique_calls} new plans "
+              f"(batch: {batch_size}, cached: {cache_hits}, deduplicated: {batch_size - cache_hits - unique_calls})")
 
-        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(prompts_to_call))) as executor:
+        # Step 3: Parallel API calls for unique tasks only.
+        with ThreadPoolExecutor(max_workers=min(self.max_workers, unique_calls)) as executor:
             futures = {
                 executor.submit(self._call_api_single, prompt, idx): idx
                 for idx, prompt in prompts_to_call
@@ -277,20 +292,23 @@ class TeacherPlanner:
 
             for future in as_completed(futures):
                 idx, plan = future.result()
-                results[idx] = plan
+                cache_key, task_desc = prompt_task_map.get(idx, (None, ""))
 
-                # Cache successful plans (both memory and disk)
-                if plan:
-                    cache_key, task_desc = prompt_task_map.get(idx, (None, ""))
-                    if cache_key:
-                        with self._cache_lock:
-                            self._plan_cache[cache_key] = plan
-                        # Save to persistent cache
-                        self._save_to_persistent_cache(cache_key, task_desc, plan)
+                if plan and cache_key:
+                    # Fan-out: fill all indices that share this cache_key
+                    for dup_idx in key2indices.get(cache_key, [idx]):
+                        results[dup_idx] = plan
+
+                    with self._cache_lock:
+                        self._plan_cache[cache_key] = plan
+                    self._save_to_persistent_cache(cache_key, task_desc, plan)
+                else:
+                    results[idx] = plan
 
         # Log statistics
         valid_count = sum(1 for r in results if r is not None)
-        print(f"[TeacherPlanner] Generated {valid_count}/{batch_size} valid plans (new API calls: {len(prompts_to_call)}, cached: {cache_hits})")
+        print(f"[TeacherPlanner] Done: {valid_count}/{batch_size} valid plans "
+              f"(API calls: {unique_calls}, cached: {cache_hits})")
 
         return results
 
