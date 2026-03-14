@@ -1,0 +1,32 @@
+{
+  "data_sources": [
+    {
+      "name": "WebShop RL Training Runs",
+      "path": "/path/to/your/trajectories",
+      "type": "webshop_rl_jsonl",
+      "enabled": true,
+      "description": "自动扫描 trajectories/ 下所有实验子目录（日期_实验名）中的 rollout_*.jsonl 文件"
+    },
+    {
+      "name": "WebShop ReBel Hindsight SFT",
+      "path": "/path/to/your/rebel_hindsight_filtered.jsonl",
+      "type": "webshop_rebel_jsonl",
+      "enabled": true,
+      "description": "WebShop ReBel Hindsight SFT 数据"
+    },
+    {
+      "name": "ALFWorld Expert Trajectories",
+      "path": "/path/to/your/rebel_coldstart_clean.json",
+      "type": "rebel_json",
+      "enabled": false,
+      "description": "ALFWorld 专家轨迹（ReBel 标注 Cold-Start 数据）"
+    },
+    {
+      "name": "Retro Example Trajectories",
+      "path": "/absolute/or/relative/path/to/example01.jsonl",
+      "type": "retro_jsonl",
+      "enabled": false,
+      "description": "Retro 任务示例轨迹"
+    }
+  ]
+}

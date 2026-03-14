@@ -46,5 +46,12 @@ logs/
 # Trajectory data (large, not versioned)
 trajectories/
 webshop_rl_traj/
-retro_traj/
-*.jsonl
+retro_traj/train_trajectories.jsonl
+alfworld_expert_traj/*.arrow
+alfworld_expert_traj/rebel_coldstart_clean.json
+
+# Local config (project-specific paths)
+backend/data_sources.json
+
+# Claude Code
+.claude/
