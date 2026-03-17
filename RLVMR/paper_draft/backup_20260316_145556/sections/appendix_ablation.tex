@@ -1,0 +1,105 @@
+% =============================================================================
+% Appendix B: Additional Ablation Details
+% (Section heading and \label{app:ablation} are in main.tex)
+% =============================================================================
+
+\subsection{V10 Per-Task Success Rates}
+
+Table~\ref{tab:v10_pertask} provides the full per-task success rates at peak epoch
+for all seven V10 configurations.
+
+\begin{table}[h]
+  \centering
+  \caption{%
+    \textbf{V10 per-task success rate at peak epoch} (ALFWorld, seed\,=\,42, \%).
+    Boldface indicates the best result for each task.
+  }
+  \label{tab:v10_pertask}
+  \vspace{4pt}
+  \small
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}lcccccc@{}}
+    \toprule
+    \textbf{Config}
+      & \texttt{pick\_place}
+      & \texttt{pick\_two}
+      & \texttt{pick\_heat}
+      & \texttt{pick\_cool}
+      & \texttt{pick\_clean}
+      & \texttt{look\_at} \\
+    \midrule
+    A1 GRPO                & 100.0          & 87.5           & 71.4           & 56.0           & 79.2            & 75.0  \\
+    A2 +Tricks             & 90.9           & 82.1           & 92.3           & 75.0           & \textbf{100.0}  & 66.7  \\
+    B1 +Belief             & 94.6           & 79.2           & 92.9           & 76.0           & \textbf{100.0}  & 75.0  \\
+    C1 +Step-adv           & 96.2           & \textbf{100.0} & 91.7           & 80.0           & \textbf{100.0}  & \textbf{92.9} \\
+    C2 Belief-hash         & \textbf{100.0} & 82.4           & 94.4           & \textbf{90.5}  & 84.6            & 87.5  \\
+    D1 +Dense rew          & \textbf{100.0} & 82.4           & 77.8           & 81.0           & 80.8            & \textbf{100.0} \\
+    E1 +Cosine decay       & \textbf{100.0} & 82.6           & \textbf{100.0} & 90.0           & 91.3            & 60.0  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Version Evolution}
+
+Table~\ref{tab:version_evolution} traces the system's development from the
+pretrained base model to the final V11 ReBel system.
+
+\begin{table}[h]
+  \centering
+  \caption{%
+    \textbf{Development trajectory by version} (ALFWorld, peak SR).
+    Each version introduces one or more targeted improvements.
+  }
+  \label{tab:version_evolution}
+  \vspace{4pt}
+  \small
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}lllcc@{}}
+    \toprule
+    \textbf{Version} & \textbf{Core Change} & \textbf{Peak SR (\%)} & \textbf{\texttt{look\_at} SR (\%)} & \textbf{Date} \\
+    \midrule
+    Base (no SFT)     & ---                              & 0.0            & ---           & 2025-12 \\
+    V4-Exp1           & Task-status grouping             & 73.4           & ---           & 2026-01 \\
+    V6-Exp2           & Relative threshold normalisation & 78.1           & 83.3          & 2026-01 \\
+    V6-Exp3           & Full + KL in reward              & 84.4           & 16.7          & 2026-01 \\
+    V7                & Clip-cov entropy protection      & 85.9           & 81.2          & 2026-01 \\
+    V8 (no belief rew) & Belief reward removed           & 90.6           & 58.3          & 2026-01 \\
+    V10-C1            & GiGPO + belief prompt (obs hash) & 94.5           & 92.9          & 2026-02 \\
+    \textbf{V11-ReBel} & \textbf{HiBO + adaptive curriculum} & \textbf{95.3} & \textbf{87.5} & \textbf{2026-02} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Hyperparameter Sensitivity: Step Advantage Weight}
+
+An earlier study (V3, December 2025) examined the effect of the step advantage
+weight $\lambda_{\text{step}}$ on validation performance.
+Table~\ref{tab:stepw_sensitivity} summarises the results.
+
+\begin{table}[h]
+  \centering
+  \caption{%
+    \textbf{Step advantage weight sensitivity} (ALFWorld, V3 study).
+    A weight of 0.5 balances episode- and step-level contributions;
+    higher weights overfit to step-level variance.
+  }
+  \label{tab:stepw_sensitivity}
+  \vspace{4pt}
+  \small
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}lccccc@{}}
+    \toprule
+    \textbf{Config} & $\lambda_{\text{step}}$
+      & \textbf{Train SR (\%)} & \textbf{Val SR (\%)}
+      & \textbf{Valid Action (\%)} & \textbf{Avg Steps} \\
+    \midrule
+    Baseline       & 1.0          & 58.2 & 43.8          & 94.1 & 19.8 \\
+    step\_adv 0.5  & \textbf{0.5} & 52.7 & \textbf{62.5} & 92.7 & 21.8 \\
+    step\_adv 2.0  & 2.0          & 61.3 & 43.8          & 92.5 & 19.6 \\
+    0.5 + 128 val  & 0.5          & 88.7 & \textbf{70.3} & 97.7 & 13.0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The optimal weight ($\lambda_{\text{step}} = 0.5$) is preserved in all V10/V11
+experiments.

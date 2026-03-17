@@ -1,0 +1,199 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{shridhar2021alfworld}
+\citation{yao2022webshop}
+\citation{shao2024deepseekmath}
+\citation{feng2025gigpo}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{The step-level credit assignment problem.}{1}{section*.2}\protected@file@percent }
+\citation{ng1999policy}
+\@writefile{toc}{\contentsline {paragraph}{The singleton group problem.}{2}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Our approach: ReBel.}{2}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Contributions.}{2}{section*.5}\protected@file@percent }
+\citation{ouyang2022training}
+\citation{shao2024deepseekmath}
+\citation{ahmadian2024back}
+\citation{wang2025ragen}
+\citation{feng2025gigpo}
+\citation{yao2023react}
+\citation{shinn2024reflexion}
+\citation{dyna1991sutton}
+\citation{ng1999policy}
+\citation{feng2025gigpo}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{3}{section.2}\protected@file@percent }
+\newlabel{sec:related}{{2}{3}{Related Work}{section.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{RL for LLM agents.}{3}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Prompting and reasoning for agents.}{3}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Belief states and world models.}{3}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Reward shaping.}{3}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Background: GiGPO and the Singleton Group Problem}{3}{section.3}\protected@file@percent }
+\newlabel{sec:motivation}{{3}{3}{Background: GiGPO and the Singleton Group Problem}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}GiGPO Step-Level Advantage Estimation}{3}{subsection.3.1}\protected@file@percent }
+\newlabel{eq:gigpo}{{1}{3}{GiGPO Step-Level Advantage Estimation}{equation.3.1}{}}
+\newlabel{eq:step_adv}{{2}{3}{GiGPO Step-Level Advantage Estimation}{equation.3.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces \textbf  {ReBel overview.} Three innovations work in a closed loop: structured belief prompting produces JSON-formatted belief states that serve as both the grouping signal for HiBO and the basis for the intrinsic reward curriculum. HiBO recovers step-level learning signal from singleton observation groups. The adaptive curriculum decays differentially across reward components as the agent's competence grows.\relax }}{4}{figure.caption.11}\protected@file@percent }
+\newlabel{fig:overview}{{2}{4}{\textbf {ReBel overview.} Three innovations work in a closed loop: structured belief prompting produces JSON-formatted belief states that serve as both the grouping signal for HiBO and the basis for the intrinsic reward curriculum. HiBO recovers step-level learning signal from singleton observation groups. The adaptive curriculum decays differentially across reward components as the agent's competence grows.\relax }{figure.caption.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}The Singleton Group Problem}{4}{subsection.3.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Singleton group prevalence in GiGPO. Over 63--85\% of all steps form groups of size\nobreakspace  {}1, yielding $A_{\text  {step}} = 0$ for those steps.\relax }}{4}{figure.caption.10}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:singleton}{{1}{4}{Singleton group prevalence in GiGPO. Over 63--85\% of all steps form groups of size~1, yielding $A_{\text {step}} = 0$ for those steps.\relax }{figure.caption.10}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Method: ReBel}{5}{section.4}\protected@file@percent }
+\newlabel{sec:method}{{4}{5}{Method: ReBel}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Innovation 1: Hierarchical Belief-Observation Grouping (HiBO)}{5}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:hibo}{{4.1}{5}{Innovation 1: Hierarchical Belief-Observation Grouping (HiBO)}{subsection.4.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Layer 1 --- Exact observation grouping.}{5}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Layer 2 --- Semantic belief fallback.}{5}{section*.13}\protected@file@percent }
+\newlabel{eq:belief_abstract}{{3}{5}{Layer 2 --- Semantic belief fallback}{equation.4.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Design rationale.}{5}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Signal recovery.}{5}{section*.15}\protected@file@percent }
+\newlabel{eq:coverage}{{4}{5}{Signal recovery}{equation.4.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Innovation 2: Competence-Adaptive Belief Reward Curriculum}{5}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:curriculum}{{4.2}{5}{Innovation 2: Competence-Adaptive Belief Reward Curriculum}{subsection.4.2}{}}
+\newlabel{eq:reward}{{5}{5}{Innovation 2: Competence-Adaptive Belief Reward Curriculum}{equation.4.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Belief reward components.}{5}{section*.16}\protected@file@percent }
+\newlabel{eq:belief_reward}{{6}{5}{Belief reward components}{equation.4.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{Adaptive base weight.}{5}{section*.17}\protected@file@percent }
+\newlabel{eq:adaptive_weight}{{7}{5}{Adaptive base weight}{equation.4.7}{}}
+\citation{ng1999policy}
+\citation{shridhar2021alfworld}
+\citation{yao2022webshop}
+\citation{shridhar2021alfworld}
+\citation{yao2022webshop}
+\@writefile{toc}{\contentsline {paragraph}{Differential component decay.}{6}{section*.18}\protected@file@percent }
+\newlabel{eq:differential}{{8}{6}{Differential component decay}{equation.4.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Innovation 3: Structured Belief Prompting}{6}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:belief_prompt}{{4.3}{6}{Innovation 3: Structured Belief Prompting}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Combined Advantage and Training Objective}{6}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments}{6}{section.5}\protected@file@percent }
+\newlabel{sec:experiments}{{5}{6}{Experiments}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Experimental Setup}{6}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:exp_setup}{{5.1}{6}{Experimental Setup}{subsection.5.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Environments.}{6}{section*.19}\protected@file@percent }
+\citation{qwen2.5}
+\citation{shao2024deepseekmath}
+\citation{feng2025gigpo}
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces ReBel Training\relax }}{7}{algorithm.1}\protected@file@percent }
+\newlabel{alg:rebel}{{1}{7}{ReBel Training\relax }{algorithm.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Base model and SFT cold-start.}{7}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Baselines.}{7}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Hyperparameters.}{7}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Metrics.}{7}{section*.23}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces \textbf  {Main results on ALFWorld} (seed\,=\,42, 128-task validation set). $\Delta _{\text  {GRPO}}$ is the absolute improvement in peak SR over the GRPO baseline. GiGPO + Belief borrows the V10-C1 configuration (same hyperparameters; see text). \relax }}{8}{table.caption.24}\protected@file@percent }
+\newlabel{tab:main_results}{{1}{8}{\textbf {Main results on ALFWorld} (seed\,=\,42, 128-task validation set). $\Delta _{\text {GRPO}}$ is the absolute improvement in peak SR over the GRPO baseline. GiGPO + Belief borrows the V10-C1 configuration (same hyperparameters; see text). \relax }{table.caption.24}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces \textbf  {Cumulative factor decomposition from GRPO to ReBel} (ALFWorld). Each row adds one component on top of the previous configuration. Marginal contributions are measured in peak SR. \relax }}{8}{table.caption.27}\protected@file@percent }
+\newlabel{tab:factor_decomposition}{{2}{8}{\textbf {Cumulative factor decomposition from GRPO to ReBel} (ALFWorld). Each row adds one component on top of the previous configuration. Marginal contributions are measured in peak SR. \relax }{table.caption.27}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Main Results}{8}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:main_results}{{5.2}{8}{Main Results}{subsection.5.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Training dynamics.}{8}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Factor decomposition.}{8}{section*.28}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \textbf  {Validation success rate over 100 training epochs} (ALFWorld, V10 systematic ablation). GiGPO-based methods (C1, C2, D1, E1) reach 80\% SR by epoch\nobreakspace  {}30, while episode-level methods (A1, A2, B1) take 3--5$\times $ longer. GRPO + Belief (B1) exhibits the largest late-stage variance, confirming that belief prompting without step-level mechanisms is destabilising. \relax }}{9}{figure.caption.25}\protected@file@percent }
+\newlabel{fig:training_curves}{{3}{9}{\textbf {Validation success rate over 100 training epochs} (ALFWorld, V10 systematic ablation). GiGPO-based methods (C1, C2, D1, E1) reach 80\% SR by epoch~30, while episode-level methods (A1, A2, B1) take 3--5$\times $ longer. GRPO + Belief (B1) exhibits the largest late-stage variance, confirming that belief prompting without step-level mechanisms is destabilising. \relax }{figure.caption.25}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces \textbf  {Systematic component ablation} (ALFWorld, V10, seed\,=\,42). Seven configurations are added sequentially. The step-level advantage transition (C1\,vs.\,B1) is the dominant isolated gain. ``Isolated $\Delta $'' is the pairwise difference between adjacent rows. \relax }}{9}{table.caption.30}\protected@file@percent }
+\newlabel{tab:ablation}{{3}{9}{\textbf {Systematic component ablation} (ALFWorld, V10, seed\,=\,42). Seven configurations are added sequentially. The step-level advantage transition (C1\,vs.\,B1) is the dominant isolated gain. ``Isolated $\Delta $'' is the pairwise difference between adjacent rows. \relax }{table.caption.30}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Ablation Study}{9}{subsection.5.3}\protected@file@percent }
+\newlabel{sec:ablation}{{5.3}{9}{Ablation Study}{subsection.5.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Systematic ablation (V10).}{9}{section*.29}\protected@file@percent }
+\citation{ng1999policy}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces \textbf  {Factor contribution waterfall} (ALFWorld, V10). Green bars indicate positive marginal contributions; red bars indicate negative effects that motivated subsequent design revisions. \relax }}{10}{figure.caption.31}\protected@file@percent }
+\newlabel{fig:factor_waterfall}{{4}{10}{\textbf {Factor contribution waterfall} (ALFWorld, V10). Green bars indicate positive marginal contributions; red bars indicate negative effects that motivated subsequent design revisions. \relax }{figure.caption.31}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces \textbf  {Targeted component ablation within ReBel} (ALFWorld, V11, seed\,=\,42). Each row removes one component from the full system. A4 (w/o adaptive decay) ran for 90 epochs before abnormal termination; peak SR is computed over the available epochs. \relax }}{10}{table.caption.33}\protected@file@percent }
+\newlabel{tab:ablation_v11}{{4}{10}{\textbf {Targeted component ablation within ReBel} (ALFWorld, V11, seed\,=\,42). Each row removes one component from the full system. A4 (w/o adaptive decay) ran for 90 epochs before abnormal termination; peak SR is computed over the available epochs. \relax }{table.caption.33}{}}
+\@writefile{toc}{\contentsline {paragraph}{Targeted ablation (V11).}{10}{section*.32}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces \textbf  {Singleton group statistics under GiGPO observation-hash grouping} (ALFWorld, V11). More than two-thirds of all steps produce singleton groups throughout training, rendering step-level advantage zero for those steps. \relax }}{11}{table.caption.36}\protected@file@percent }
+\newlabel{tab:singleton}{{5}{11}{\textbf {Singleton group statistics under GiGPO observation-hash grouping} (ALFWorld, V11). More than two-thirds of all steps produce singleton groups throughout training, rendering step-level advantage zero for those steps. \relax }{table.caption.36}{}}
+\@writefile{toc}{\contentsline {paragraph}{Interaction effects and causal attribution.}{11}{section*.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Analysis: Singleton Problem and HiBO}{11}{subsection.5.4}\protected@file@percent }
+\newlabel{sec:hibo_analysis}{{5.4}{11}{Analysis: Singleton Problem and HiBO}{subsection.5.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Singleton prevalence in GiGPO.}{11}{section*.35}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{HiBO signal recovery.}{11}{section*.37}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces \textbf  {HiBO step-advantage coverage} (ALFWorld). \textbf  {Left}: Fraction of steps receiving non-zero step advantage under observation-only grouping (GiGPO) vs.\ HiBO. HiBO raises coverage from ${\sim }$20\% to ${\sim }$76\%. \textbf  {Right}: Group-size distributions; HiBO substantially reduces the singleton mass. \relax }}{12}{figure.caption.38}\protected@file@percent }
+\newlabel{fig:hibo_coverage}{{5}{12}{\textbf {HiBO step-advantage coverage} (ALFWorld). \textbf {Left}: Fraction of steps receiving non-zero step advantage under observation-only grouping (GiGPO) vs.\ HiBO. HiBO raises coverage from ${\sim }$20\% to ${\sim }$76\%. \textbf {Right}: Group-size distributions; HiBO substantially reduces the singleton mass. \relax }{figure.caption.38}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces \textbf  {The singleton group problem and HiBO's resolution.} \textbf  {Left}: Under observation-only grouping, the majority of steps form singleton groups (advantage\,=\,0). \textbf  {Right}: HiBO's belief fallback reassigns singletons to semantically coherent groups, producing informative step advantages. \relax }}{12}{figure.caption.40}\protected@file@percent }
+\newlabel{fig:singleton_problem}{{6}{12}{\textbf {The singleton group problem and HiBO's resolution.} \textbf {Left}: Under observation-only grouping, the majority of steps form singleton groups (advantage\,=\,0). \textbf {Right}: HiBO's belief fallback reassigns singletons to semantically coherent groups, producing informative step advantages. \relax }{figure.caption.40}{}}
+\newlabel{eq:coverage_exp}{{9}{12}{HiBO signal recovery}{equation.5.9}{}}
+\newlabel{eq:signal_hibo}{{10}{12}{HiBO signal recovery}{equation.5.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{Coverage and learning signal.}{12}{section*.39}\protected@file@percent }
+\citation{ng1999policy}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces \textbf  {Adaptive differential decay curves} (ALFWorld). All components share the same base weight trajectory (Eq.\nobreakspace  {}\ref  {eq:adaptive_decay}), but diverge rapidly due to component-specific exponents. By epoch\nobreakspace  {}40, \textsc  {Exploration} retains only 6\% of its initial weight; \textsc  {Progress} retains 38\%. \relax }}{13}{figure.caption.43}\protected@file@percent }
+\newlabel{fig:decay_curves}{{7}{13}{\textbf {Adaptive differential decay curves} (ALFWorld). All components share the same base weight trajectory (Eq.~\ref {eq:adaptive_decay}), but diverge rapidly due to component-specific exponents. By epoch~40, \textsc {Exploration} retains only 6\% of its initial weight; \textsc {Progress} retains 38\%. \relax }{figure.caption.43}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Analysis: Adaptive Differential Belief Reward Decay}{13}{subsection.5.5}\protected@file@percent }
+\newlabel{sec:decay_analysis}{{5.5}{13}{Analysis: Adaptive Differential Belief Reward Decay}{subsection.5.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Component-level analysis.}{13}{section*.41}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Differential decay schedules.}{13}{section*.42}\protected@file@percent }
+\newlabel{eq:adaptive_decay}{{11}{13}{Differential decay schedules}{equation.5.11}{}}
+\@writefile{toc}{\contentsline {paragraph}{V10 vs.\ V11 decay evidence.}{13}{section*.44}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces \textbf  {Per-task peak success rate} (ALFWorld, V11). Step-level methods substantially reduce the performance spread across task types relative to GRPO; ReBel achieves 100\% on four of six task types. \relax }}{14}{figure.caption.45}\protected@file@percent }
+\newlabel{fig:pertask}{{8}{14}{\textbf {Per-task peak success rate} (ALFWorld, V11). Step-level methods substantially reduce the performance spread across task types relative to GRPO; ReBel achieves 100\% on four of six task types. \relax }{figure.caption.45}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces \textbf  {Per-task success rate at peak epoch} (ALFWorld, V11, seed\,=\,42). ``Gap'' is the difference between the best and worst task SR for each method. ReBel achieves 100\% on four of six task types; \texttt  {pick\_cool} and \texttt  {look\_at} remain the most challenging. \relax }}{14}{table.caption.46}\protected@file@percent }
+\newlabel{tab:pertask}{{6}{14}{\textbf {Per-task success rate at peak epoch} (ALFWorld, V11, seed\,=\,42). ``Gap'' is the difference between the best and worst task SR for each method. ReBel achieves 100\% on four of six task types; \texttt {pick\_cool} and \texttt {look\_at} remain the most challenging. \relax }{table.caption.46}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.6}Per-Task Analysis}{14}{subsection.5.6}\protected@file@percent }
+\newlabel{sec:pertask}{{5.6}{14}{Per-Task Analysis}{subsection.5.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.7}Output Complexity and Valid Action Rate}{14}{subsection.5.7}\protected@file@percent }
+\newlabel{sec:valid_action}{{5.7}{14}{Output Complexity and Valid Action Rate}{subsection.5.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces \textbf  {Valid action ratio statistics} (ALFWorld, V11). ``Step 1'' and ``Step 100'' refer to the first and last RL training steps. ``Mean'' is averaged over all training steps. ReBel's lower mean is almost entirely attributable to early-training format learning, not a persistent deficiency. \relax }}{15}{table.caption.47}\protected@file@percent }
+\newlabel{tab:valid_action}{{7}{15}{\textbf {Valid action ratio statistics} (ALFWorld, V11). ``Step 1'' and ``Step 100'' refer to the first and last RL training steps. ``Mean'' is averaged over all training steps. ReBel's lower mean is almost entirely attributable to early-training format learning, not a persistent deficiency. \relax }{table.caption.47}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {9}{\ignorespaces \textbf  {Epochs to reach target success rate thresholds} (ALFWorld). Step-level methods reach 80\% SR 2--3$\times $ faster than GRPO. No episode-level method crosses the 90\% threshold within 100 epochs. \relax }}{15}{figure.caption.48}\protected@file@percent }
+\newlabel{fig:learning_speed}{{9}{15}{\textbf {Epochs to reach target success rate thresholds} (ALFWorld). Step-level methods reach 80\% SR 2--3$\times $ faster than GRPO. No episode-level method crosses the 90\% threshold within 100 epochs. \relax }{figure.caption.48}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.8}Learning Speed}{15}{subsection.5.8}\protected@file@percent }
+\newlabel{sec:learning_speed}{{5.8}{15}{Learning Speed}{subsection.5.8}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces \textbf  {First epoch reaching each success rate threshold} (ALFWorld, V10). ``---'' indicates the threshold was not reached within 100 epochs. V10 identifiers are used; see Table\nobreakspace  {}\ref  {tab:ablation} for correspondence. \relax }}{16}{table.caption.49}\protected@file@percent }
+\newlabel{tab:learning_speed}{{8}{16}{\textbf {First epoch reaching each success rate threshold} (ALFWorld, V10). ``---'' indicates the threshold was not reached within 100 epochs. V10 identifiers are used; see Table~\ref {tab:ablation} for correspondence. \relax }{table.caption.49}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces \textbf  {WebShop results — ReBel (preliminary, three seeds).} Baseline comparisons (GRPO, GiGPO) are in preparation and will appear in the final version; this table reports ReBel's absolute performance and seed-level variance only. The mean valid action ratio (0.994) reflects WebShop's simpler action grammar. \relax }}{16}{table.caption.51}\protected@file@percent }
+\newlabel{tab:webshop_results}{{9}{16}{\textbf {WebShop results — ReBel (preliminary, three seeds).} Baseline comparisons (GRPO, GiGPO) are in preparation and will appear in the final version; this table reports ReBel's absolute performance and seed-level variance only. The mean valid action ratio (0.994) reflects WebShop's simpler action grammar. \relax }{table.caption.51}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.9}Generalization to WebShop}{16}{subsection.5.9}\protected@file@percent }
+\newlabel{sec:webshop}{{5.9}{16}{Generalization to WebShop}{subsection.5.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Environment adaptation.}{16}{section*.50}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Preliminary assessment.}{16}{section*.52}\protected@file@percent }
+\bibstyle{abbrvnat}
+\bibdata{refs}
+\bibcite{ahmadian2024back}{{1}{2024}{{Ahmadian et~al.}}{{Ahmadian, Cremer, Gall{\'e}, Fadaee, Kreutzer, Pietquin, {\"U}st{\"u}n, and Hooker}}}
+\bibcite{feng2025gigpo}{{2}{2025}{{Feng et~al.}}{{Feng, Xue, Liu, and An}}}
+\bibcite{ng1999policy}{{3}{1999}{{Ng et~al.}}{{Ng, Harada, and Russell}}}
+\bibcite{ouyang2022training}{{4}{2022}{{Ouyang et~al.}}{{Ouyang, Wu, Jiang, Almeida, Wainwright, Mishkin, Zhang, Agarwal, Slama, Ray, et~al.}}}
+\bibcite{shao2024deepseekmath}{{5}{2024}{{Shao et~al.}}{{Shao, Wang, Zhu, Xu, Song, Bi, Zhang, Zhang, Li, Wu, and Guo}}}
+\bibcite{shinn2024reflexion}{{6}{2024}{{Shinn et~al.}}{{Shinn, Cassano, Gopinath, Narasimhan, and Yao}}}
+\bibcite{shridhar2021alfworld}{{7}{2021}{{Shridhar et~al.}}{{Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler, and Hausknecht}}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Conclusion}{17}{section.6}\protected@file@percent }
+\newlabel{sec:conclusion}{{6}{17}{Conclusion}{section.6}{}}
+\bibcite{dyna1991sutton}{{8}{1991}{{Sutton}}{{}}}
+\bibcite{wang2025ragen}{{9}{2025}{{Wang et~al.}}{{Wang, Zhang, Guo, Zhou, Yuan, Kong, Pang, Cheng, and Guo}}}
+\bibcite{qwen2.5}{{10}{2024}{{Yang et~al.}}{{Yang, Yang, Zhang, Hui, Zheng, Yu, et~al.}}}
+\bibcite{yao2022webshop}{{11}{2022}{{Yao et~al.}}{{Yao, Chen, Yang, and Narasimhan}}}
+\bibcite{yao2023react}{{12}{2023}{{Yao et~al.}}{{Yao, Zhao, Yu, Du, Shafran, Narasimhan, and Cao}}}
+\citation{qwen2.5}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Full Hyperparameter Configuration}{18}{appendix.A}\protected@file@percent }
+\newlabel{app:config}{{A}{18}{Full Hyperparameter Configuration}{appendix.A}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces \textbf  {Shared hyperparameters} (all methods, both environments).\relax }}{18}{table.caption.54}\protected@file@percent }
+\newlabel{tab:config_shared}{{10}{18}{\textbf {Shared hyperparameters} (all methods, both environments).\relax }{table.caption.54}{}}
+\@writefile{toc}{\contentsline {paragraph}{SFT data collection.}{18}{section*.56}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces \textbf  {ReBel-specific hyperparameters.}\relax }}{19}{table.caption.55}\protected@file@percent }
+\newlabel{tab:config_rebel}{{11}{19}{\textbf {ReBel-specific hyperparameters.}\relax }{table.caption.55}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {B}Additional Ablation Results}{19}{appendix.B}\protected@file@percent }
+\newlabel{app:ablation}{{B}{19}{Additional Ablation Results}{appendix.B}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.1}V10 Per-Task Success Rates}{19}{subsection.B.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces \textbf  {V10 per-task success rate at peak epoch} (ALFWorld, seed\,=\,42, \%). Boldface indicates the best result for each task. \relax }}{19}{table.caption.57}\protected@file@percent }
+\newlabel{tab:v10_pertask}{{12}{19}{\textbf {V10 per-task success rate at peak epoch} (ALFWorld, seed\,=\,42, \%). Boldface indicates the best result for each task. \relax }{table.caption.57}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.2}Version Evolution}{19}{subsection.B.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Hyperparameter Sensitivity: Step Advantage Weight}{19}{subsection.B.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces \textbf  {Development trajectory by version} (ALFWorld, peak SR). Each version introduces one or more targeted improvements. \relax }}{20}{table.caption.58}\protected@file@percent }
+\newlabel{tab:version_evolution}{{13}{20}{\textbf {Development trajectory by version} (ALFWorld, peak SR). Each version introduces one or more targeted improvements. \relax }{table.caption.58}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces \textbf  {Step advantage weight sensitivity} (ALFWorld, V3 study). A weight of 0.5 balances episode- and step-level contributions; higher weights overfit to step-level variance. \relax }}{20}{table.caption.59}\protected@file@percent }
+\newlabel{tab:stepw_sensitivity}{{14}{20}{\textbf {Step advantage weight sensitivity} (ALFWorld, V3 study). A weight of 0.5 balances episode- and step-level contributions; higher weights overfit to step-level variance. \relax }{table.caption.59}{}}
+\gdef \@abspage@last{20}

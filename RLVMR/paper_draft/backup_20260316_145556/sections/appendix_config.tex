@@ -1,0 +1,82 @@
+% =============================================================================
+% Appendix A: Full Hyperparameter Configuration
+% (Section heading and \label{app:config} are in main.tex)
+% =============================================================================
+
+Tables~\ref{tab:config_shared} and~\ref{tab:config_rebel} list all hyperparameters
+used in our experiments.
+All methods share the settings in Table~\ref{tab:config_shared}; ReBel-specific
+parameters are listed in Table~\ref{tab:config_rebel}.
+
+\begin{table}[h]
+  \centering
+  \caption{\textbf{Shared hyperparameters} (all methods, both environments).}
+  \label{tab:config_shared}
+  \vspace{4pt}
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Notes} \\
+    \midrule
+    Base model          & Qwen2.5-1.5B-Instruct & \citep{qwen2.5} \\
+    Optimizer           & Adam ($\beta_1{=}0.9$, $\beta_2{=}0.999$) & \\
+    Learning rate       & $1 \times 10^{-6}$ & \\
+    Training epochs     & 100 & \\
+    PPO epochs/update   & 1 & \\
+    Rollout trajectories per prompt & 16 & \\
+    KL coefficient      & 0.001 & low-variance estimator \\
+    Clip ratio $\epsilon$ & 0.2 & standard PPO \\
+    SFT trajectories (ALFWorld) & 390 & hindsight-annotated \\
+    SFT trajectories (WebShop)  & 500 & hindsight-annotated \\
+    SFT training epochs & 90 & \\
+    ALFWorld training prompts/batch & 16 & \\
+    ALFWorld eval tasks & 128 & generalization level 0 \\
+    ALFWorld eval interval & 5 epochs & \\
+    WebShop max response length & 1536 tokens & \\
+    WebShop reward scaling & $\times 10$ & \\
+    WebShop success threshold & $r \geq 0.5$ & \\
+    Hardware (ALFWorld) & 8$\times$ A100 (80\,GB) & \\
+    Hardware (WebShop)  & 4$\times$ A100 (80\,GB) & \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \caption{\textbf{ReBel-specific hyperparameters.}}
+  \label{tab:config_rebel}
+  \vspace{4pt}
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Notes} \\
+    \midrule
+    Episode advantage weight $\lambda_{\text{ep}}$ & 1.0 & \\
+    Step advantage weight $\lambda_{\text{step}}$ & 0.5 & \\
+    Asymmetric clip low $\epsilon_{\text{low}}$ & 0.2 & \\
+    Asymmetric clip high $\epsilon_{\text{high}}$ & 0.28 & \\
+    Entropy protection (clip-cov)       & $[0.0,\; 0.3]$ & \\
+    Invalid action penalty $\lambda$    & 0.1 & \\
+    Belief reward base scale            & 0.5 & \\
+    Adaptive decay exponent $\alpha$    & 2.0 & Eq.~\ref{eq:adaptive_decay} \\
+    Adaptive decay threshold $\tau$     & 0.90 & \\
+    Minimum base weight                 & 0.05 & \\
+    $\gamma_{\textsc{Progress}}$        & 0.7 & slow decay \\
+    $\gamma_{\textsc{Consistency}}$     & 1.0 & standard \\
+    $\gamma_{\textsc{Exploration}}$     & 2.0 & rapid decay \\
+    $\gamma_{\textsc{Format}}$          & 0.0 & constant \\
+    HiBO observation hash function      & SHA-256 prefix (16 chars) & \\
+    HiBO belief abstraction dimensions  & 4 & stage, found, holding, explore\_level \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{SFT data collection.}
+Expert trajectories for the SFT cold-start were collected using a rule-based planner
+with hindsight relabelling: trajectories are replayed forward from a near-goal state,
+and the belief annotations are added post-hoc by a deterministic belief extractor
+that reads the ground-truth game state.
+This avoids distributional mismatch between the belief format expected during RL
+and the beliefs seen during SFT.

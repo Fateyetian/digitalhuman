@@ -1,0 +1,98 @@
+\begin{thebibliography}{12}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Ahmadian et~al.(2024)Ahmadian, Cremer, Gall{\'e}, Fadaee, Kreutzer,
+  Pietquin, {\"U}st{\"u}n, and Hooker]{ahmadian2024back}
+A.~Ahmadian, C.~Cremer, M.~Gall{\'e}, M.~Fadaee, J.~Kreutzer, O.~Pietquin,
+  A.~{\"U}st{\"u}n, and S.~Hooker.
+\newblock Back to basics: Revisiting {REINFORCE}-style optimization for
+  learning from human feedback in {LLMs}.
+\newblock \emph{arXiv preprint arXiv:2402.14740}, 2024.
+
+\bibitem[Feng et~al.(2025)Feng, Xue, Liu, and An]{feng2025gigpo}
+L.~Feng, Z.~Xue, T.~Liu, and B.~An.
+\newblock Group-in-group policy optimization for {LLM} agent training.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2505.10978}.
+
+\bibitem[Ng et~al.(1999)Ng, Harada, and Russell]{ng1999policy}
+A.~Y. Ng, D.~Harada, and S.~Russell.
+\newblock Policy invariance under reward transformations: Theory and
+  application to reward shaping.
+\newblock In \emph{Proceedings of the Sixteenth International Conference on
+  Machine Learning (ICML)}, pages 278--287, 1999.
+
+\bibitem[Ouyang et~al.(2022)Ouyang, Wu, Jiang, Almeida, Wainwright, Mishkin,
+  Zhang, Agarwal, Slama, Ray, et~al.]{ouyang2022training}
+L.~Ouyang, J.~Wu, X.~Jiang, D.~Almeida, C.~Wainwright, P.~Mishkin, C.~Zhang,
+  S.~Agarwal, K.~Slama, A.~Ray, et~al.
+\newblock Training language models to follow instructions with human feedback.
+\newblock \emph{Advances in Neural Information Processing Systems (NeurIPS)},
+  35:\penalty0 27730--27744, 2022.
+
+\bibitem[Shao et~al.(2024)Shao, Wang, Zhu, Xu, Song, Bi, Zhang, Zhang, Li, Wu,
+  and Guo]{shao2024deepseekmath}
+Z.~Shao, P.~Wang, Q.~Zhu, R.~Xu, J.~Song, X.~Bi, H.~Zhang, M.~Zhang, Y.~Li,
+  Y.~Wu, and D.~Guo.
+\newblock {DeepSeekMath}: Pushing the limits of mathematical reasoning in open
+  language models.
+\newblock \emph{arXiv preprint arXiv:2402.03300}, 2024.
+
+\bibitem[Shinn et~al.(2024)Shinn, Cassano, Gopinath, Narasimhan, and
+  Yao]{shinn2024reflexion}
+N.~Shinn, F.~Cassano, A.~Gopinath, K.~Narasimhan, and S.~Yao.
+\newblock Reflexion: Language agents with verbal reinforcement learning.
+\newblock \emph{Advances in Neural Information Processing Systems (NeurIPS)},
+  36, 2024.
+
+\bibitem[Shridhar et~al.(2021)Shridhar, Yuan, C{\^o}t{\'e}, Bisk, Trischler,
+  and Hausknecht]{shridhar2021alfworld}
+M.~Shridhar, X.~Yuan, M.-A. C{\^o}t{\'e}, Y.~Bisk, A.~Trischler, and
+  M.~Hausknecht.
+\newblock {ALFWorld}: Aligning text and embodied environments for interactive
+  learning.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2021.
+\newblock URL \url{https://arxiv.org/abs/2010.03768}.
+
+\bibitem[Sutton(1991)]{dyna1991sutton}
+R.~S. Sutton.
+\newblock Dyna, an integrated architecture for learning, planning, and
+  reacting.
+\newblock In \emph{ACM SIGART Bulletin}, volume~2, pages 160--163, 1991.
+
+\bibitem[Wang et~al.(2025)Wang, Zhang, Guo, Zhou, Yuan, Kong, Pang, Cheng, and
+  Guo]{wang2025ragen}
+Z.~Wang, K.~Zhang, Z.~Guo, Y.~Zhou, J.~Yuan, T.~Kong, L.~Pang, X.~Cheng, and
+  Z.~Guo.
+\newblock {RAGEN}: Understanding self-evolution in {LLM} agents via multi-turn
+  reinforcement learning.
+\newblock \emph{arXiv preprint arXiv:2504.20073}, 2025.
+
+\bibitem[Yang et~al.(2024)Yang, Yang, Zhang, Hui, Zheng, Yu, et~al.]{qwen2.5}
+A.~Yang, B.~Yang, B.~Zhang, B.~Hui, B.~Zheng, B.~Yu, et~al.
+\newblock Qwen2.5 technical report.
+\newblock \emph{arXiv preprint arXiv:2412.15115}, 2024.
+
+\bibitem[Yao et~al.(2022)Yao, Chen, Yang, and Narasimhan]{yao2022webshop}
+S.~Yao, H.~Chen, J.~Yang, and K.~Narasimhan.
+\newblock {WebShop}: Towards scalable real-world web interaction with grounded
+  language agents.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, volume~35, pages 20744--20757, 2022.
+\newblock URL \url{https://arxiv.org/abs/2207.01206}.
+
+\bibitem[Yao et~al.(2023)Yao, Zhao, Yu, Du, Shafran, Narasimhan, and
+  Cao]{yao2023react}
+S.~Yao, J.~Zhao, D.~Yu, N.~Du, I.~Shafran, K.~Narasimhan, and Y.~Cao.
+\newblock {ReAct}: Synergizing reasoning and acting in language models.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2210.03629}.
+
+\end{thebibliography}

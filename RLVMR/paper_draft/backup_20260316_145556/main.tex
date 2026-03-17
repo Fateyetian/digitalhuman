@@ -1,0 +1,546 @@
+\documentclass{article}
+
+% NeurIPS 2026 style — replace with neurips_2026 when style file is released
+\usepackage[preprint]{neurips_2025}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{wrapfig}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,calc}
+
+% Custom colors
+\definecolor{myblue}{RGB}{31,119,180}
+\definecolor{mygreen}{RGB}{44,160,44}
+\definecolor{myred}{RGB}{214,39,40}
+\definecolor{myorange}{RGB}{255,127,14}
+
+\title{ReBel: Rescuing Step-Level Credit Assignment via \\
+  Hierarchical Belief-Observation Grouping for LLM Agent Training}
+
+\author{%
+  % Authors omitted for double-blind review
+  \textbf{Anonymous Authors}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reinforcement learning for interactive LLM agents demands accurate step-level
+credit assignment: understanding \emph{which} actions along a long trajectory
+led to success or failure.
+Existing step-level methods such as GiGPO group trajectories by exact observation
+hash to compute counterfactual advantages, but this grouping strategy is
+fundamentally limited by \emph{singleton groups}---in practice, 63--85\% of
+all steps produce groups of size one, yielding a step-level advantage of exactly
+zero for the majority of the training signal.
+We present \textbf{ReBel} (\underline{Re}inforcement Learning with
+\underline{Bel}ief-State Enhancement), which addresses this limitation through
+three tightly integrated innovations.
+First, \textbf{HiBO} (Hierarchical Belief-Observation grouping) recovers
+learning signal from singleton groups by hierarchically falling back from exact
+observation matching to a coarse-grained semantic belief abstraction, raising
+effective step-advantage coverage from $\sim$20\% to $\sim$76\%.
+Second, a \textbf{competence-adaptive belief reward curriculum} provides dense
+intrinsic feedback that accelerates early environment cognition while
+differentially decaying reward components based on their alignment with task
+objectives---rapidly eliminating the harmful exploration bias while preserving
+well-aligned progress signals.
+Third, \textbf{structured belief prompting} forces the agent to maintain an
+explicit world model at each step, simultaneously serving as a cognitive
+scaffold, a grouping signal for HiBO, and a basis for the intrinsic reward.
+On ALFWorld, ReBel achieves 95.3\% peak success rate, surpassing GRPO by
+13.3 percentage points and GiGPO by 3.9 points.
+On WebShop, ReBel reaches 75.4\% success rate, demonstrating cross-environment
+generalization without architecture changes.
+\end{abstract}
+
+
+% =============================================================================
+\section{Introduction}
+\label{sec:intro}
+% =============================================================================
+
+Reinforcement learning (RL) for large language model (LLM) agents has emerged as
+a compelling paradigm for teaching models to solve multi-step interactive tasks:
+household manipulation~\citep{shridhar2021alfworld}, web navigation~\citep{yao2022webshop},
+and scientific reasoning.
+In these settings, an agent must issue a sequence of decisions over dozens of
+steps, where success depends not merely on individual actions but on their
+coherent composition into task-completing strategies.
+
+\paragraph{The step-level credit assignment problem.}
+A fundamental challenge in this regime is \emph{credit assignment}: which
+of the many actions in a trajectory contributed to a successful outcome?
+Episode-level methods such as GRPO~\citep{shao2024deepseekmath} assign the same
+reward signal to every step in a trajectory, ignoring the heterogeneous quality
+of individual decisions.
+Step-level methods, most prominently GiGPO~\citep{feng2025gigpo}, improve on
+this by grouping trajectories that share the same environment state and comparing
+the downstream outcomes of different actions at that state---a form of
+counterfactual credit assignment.
+
+\paragraph{The singleton group problem.}
+Despite its theoretical appeal, step-level grouping in practice suffers from
+a critical failure mode that has not previously been identified and addressed.
+GiGPO groups trajectories by \emph{exact observation text hash}: two steps
+belong to the same group only if their observation strings are character-for-character
+identical.
+In interactive text environments such as ALFWorld, observations enumerate objects
+in non-deterministic order and vary in wording; even two trajectories that reach
+logically identical states will typically produce different observation strings.
+As a result, \textbf{63--85\% of all training steps form singleton groups},
+for which the step-level advantage is mathematically zero (the group mean equals
+the single sample value).
+GiGPO's step mechanism is therefore active for only 15--30\% of steps
+at any given point in training.
+The paradox is that this sparse signal still delivers a substantial gain over
+GRPO (+6.2\% in our controlled ablation), which implies that the remaining
+70--85\% of discarded steps carry proportionally valuable learning signal.
+
+\paragraph{Our approach: ReBel.}
+We propose to \emph{rescue} this discarded signal through a principled use of
+belief states.
+At each step, an LLM agent can produce a structured belief state---a compact
+summary of what it knows about the world, its current subgoal, and its
+exploration history.
+Two steps that share the same observation might not hash identically, but they
+can share a belief state cluster (e.g., ``holding knife, searching for fridge''),
+providing a semantically justified basis for grouping.
+
+ReBel exploits this observation through three complementary mechanisms (Figure~\ref{fig:overview}):
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=3pt]
+  \item \textbf{HiBO} (Hierarchical Belief-Observation Grouping): a two-layer grouping
+    strategy that preserves GiGPO's high-quality exact observation groups where they
+    exist and falls back to coarse-grained semantic belief clustering for singleton steps,
+    recovering learning signal from 76\% of all steps.
+
+  \item \textbf{Competence-adaptive belief reward curriculum}: dense intrinsic
+    rewards computed from the agent's belief quality, weighted by a curriculum
+    that decays adaptively as the agent improves.
+    Critically, different reward components decay at different rates:
+    the exploration reward (which conflicts with depth-first task requirements)
+    decays $2.5\times$ faster than the progress reward (which is well-aligned).
+
+  \item \textbf{Structured belief prompting}: a JSON-formatted belief template
+    that forces the agent to articulate its world model, subgoal status, and
+    exploration map at every step---simultaneously improving reasoning quality,
+    enabling HiBO grouping, and grounding the intrinsic reward.
+\end{enumerate}
+
+The three components form a closed loop: structured belief output provides the
+signal for HiBO and reward computation; the reward curriculum improves belief
+quality during early training; improved belief quality in turn enhances HiBO's
+grouping reliability.
+
+\paragraph{Contributions.}
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+  \item We identify and quantify the singleton group problem in GiGPO-style
+    step-level credit assignment (Section~\ref{sec:motivation}), demonstrating
+    that 63--85\% of step-level learning signal is routinely discarded.
+  \item We propose HiBO, a hierarchical grouping algorithm that recovers
+    step-level signal from singleton groups via semantic belief abstraction,
+    raising effective coverage from $\sim$20\% to $\sim$76\%
+    (Section~\ref{sec:method}).
+  \item We introduce a competence-adaptive belief reward curriculum with
+    differential component decay, resolving the reward-shaping bias that made
+    prior dense-reward approaches harmful (Section~\ref{sec:method}).
+  \item On ALFWorld, ReBel achieves 95.3\% peak success rate, a 13.3-point
+    gain over GRPO and 3.9-point gain over the strongest GiGPO variant.
+    On WebShop, ReBel achieves 75.4\% success rate with the same algorithm,
+    demonstrating cross-environment generalization
+    (Section~\ref{sec:experiments}).
+\end{itemize}
+
+
+% =============================================================================
+\section{Related Work}
+\label{sec:related}
+% =============================================================================
+
+\paragraph{RL for LLM agents.}
+Applying RL to train LLM-based agents has gained traction following the success
+of RLHF~\citep{ouyang2022training}.
+GRPO~\citep{shao2024deepseekmath} and RLOO~\citep{ahmadian2024back} extend
+group-relative policy optimization to agentic settings, treating each trajectory
+as a sample for advantage estimation.
+RAGEN~\citep{wang2025ragen} studies multi-turn RL for agent training.
+GiGPO~\citep{feng2025gigpo} introduces step-level credit assignment through
+observation-based trajectory grouping, achieving state-of-the-art results on
+ALFWorld.
+Our work builds on GiGPO's step-level insight but addresses the fundamental
+singleton group limitation that renders it ineffective for the majority of steps.
+
+\paragraph{Prompting and reasoning for agents.}
+ReAct~\citep{yao2023react} pioneers the combination of reasoning traces and actions.
+Reflexion~\citep{shinn2024reflexion} adds verbal self-reflection after failures.
+These methods rely on inference-time prompting without updating model parameters.
+ReBel's structured belief prompting is distinct: it shapes the model's output
+format to enable step-level grouping and reward computation during RL training.
+
+\paragraph{Belief states and world models.}
+The idea of maintaining an explicit belief state dates to model-based
+RL~\citep{dyna1991sutton} and partially observable Markov decision processes.
+In the LLM setting, belief prompting has been explored as a cognitive scaffold
+to improve agent consistency.
+Our work is the first to leverage the structured belief output as both a
+grouping signal and a reward basis within RL training, creating a functional
+loop between belief maintenance, credit assignment, and reward shaping.
+
+\paragraph{Reward shaping.}
+\citet{ng1999policy} establish that potential-based reward shaping preserves
+the optimal policy, while non-potential-based shaping introduces bias
+proportional to the shaping weight.
+Belief-based intrinsic rewards are not potential-based (they depend on model
+outputs), so they introduce policy bias without careful management.
+Our differential decay curriculum addresses this by driving the shaping
+coefficient to zero as the agent converges, with component-specific rates
+calibrated to each reward's alignment with the task objective.
+
+
+% =============================================================================
+\section{Background: GiGPO and the Singleton Group Problem}
+\label{sec:motivation}
+% =============================================================================
+
+\subsection{GiGPO Step-Level Advantage Estimation}
+
+GiGPO~\citep{feng2025gigpo} decomposes the PPO advantage into episode and step
+components:
+\begin{equation}
+  A_{\text{total}}(i) = A_{\text{episode}}(i) + \lambda \cdot A_{\text{step}}(i),
+  \label{eq:gigpo}
+\end{equation}
+where $A_{\text{episode}}$ is computed by GRPO-style group normalization across
+all rollouts sharing the same prompt, and $A_{\text{step}}$ groups trajectories
+by the exact observation text at each step:
+\begin{equation}
+  A_{\text{step}}(i) = G_t(i) - \operatorname{mean}_{j \in \mathcal{G}(i)} G_t(j),
+  \label{eq:step_adv}
+\end{equation}
+where $G_t(i)$ is the discounted return from step $t$ in trajectory $i$, and
+$\mathcal{G}(i)$ is the observation group containing step $i$.
+
+The counterfactual semantics of $A_{\text{step}}$ are compelling: it answers
+``given \emph{exactly} this environment state, how did my action compare to
+the average action taken here?''
+However, this semantics requires at least two trajectories to reach
+\emph{identical} observations---and in practice they rarely do.
+
+\subsection{The Singleton Group Problem}
+
+\begin{wrapfigure}{r}{0.45\textwidth}
+  \vspace{-10pt}
+  \centering
+  \includegraphics[width=0.43\textwidth]{../code/rebel_test_results/v11_final/paper_figures/fig11_singleton_problem.pdf}
+  \caption{Singleton group prevalence in GiGPO. Over 63--85\% of all steps
+    form groups of size~1, yielding $A_{\text{step}} = 0$ for those steps.}
+  \label{fig:singleton}
+  \vspace{-6pt}
+\end{wrapfigure}
+
+ALFWorld observations enumerate room objects in non-deterministic order and
+use variable descriptions.
+In a typical batch of $n=16$ rollouts per prompt, each covering up to 30 steps,
+the vast majority of step-level observations are unique.
+Table~\ref{tab:singleton} (Section~\ref{sec:hibo_analysis}) quantifies this:
+63--85\% of steps form singleton groups, with median group size~1.0 throughout
+training.
+For such steps, Eq.~\eqref{eq:step_adv} yields $A_{\text{step}} = G_t - G_t = 0$.
+
+\textbf{The step-level mechanism operates on only 15--30\% of training data
+despite covering 100\% of parameters.}
+Yet this sparse signal still beats episode-level GRPO by 6.2 percentage points
+in our controlled ablation, indicating that the discarded 70--85\% of steps
+carries proportionally valuable, recoverable information.
+
+
+% =============================================================================
+\section{Method: ReBel}
+\label{sec:method}
+% =============================================================================
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{../code/rebel_test_results/v11_final/paper_figures/fig9_algorithm_overview.pdf}
+  \caption{\textbf{ReBel overview.} Three innovations work in a closed loop:
+    structured belief prompting produces JSON-formatted belief states that serve as
+    both the grouping signal for HiBO and the basis for the intrinsic reward
+    curriculum.
+    HiBO recovers step-level learning signal from singleton observation groups.
+    The adaptive curriculum decays differentially across reward components as the
+    agent's competence grows.}
+  \label{fig:overview}
+\end{figure}
+
+\subsection{Innovation 1: Hierarchical Belief-Observation Grouping (HiBO)}
+\label{sec:hibo}
+
+HiBO applies a two-layer precedence rule to determine which group each step
+belongs to for step-level advantage computation.
+
+\paragraph{Layer 1 --- Exact observation grouping.}
+For each step $i$ with observation $o_i$ and prompt identifier $u_i$, we
+compute $\text{key}_1(i) = (u_i, \,\text{hash}(o_i))$.
+If $|\mathcal{G}_1(i)| \geq 2$, we use the exact observation group, inheriting
+GiGPO's high-fidelity counterfactual semantics.
+
+\paragraph{Layer 2 --- Semantic belief fallback.}
+For singleton steps ($|\mathcal{G}_1(i)| = 1$), we extract a
+\emph{semantic belief abstraction}:
+\begin{equation}
+  \phi(i) = \bigl(\,\text{stage}(i),\;\text{found}(i),\;\text{holding}(i),\;\text{explore\_level}(i)\bigr),
+  \label{eq:belief_abstract}
+\end{equation}
+a four-dimensional discrete vector encoding the agent's current task stage
+($\in 10$ categories), whether the target object has been located (binary),
+whether the agent holds an object (binary), and exploration progress
+($\in \{$low, mid, high$\}$).
+The group key is $\text{key}_2(i) = (u_i, \phi(i))$, producing
+$\sim$50 active feature combinations per batch.
+The step advantage is then computed by Eq.~\eqref{eq:step_adv} within
+whichever group (Layer~1 or Layer~2) applies.
+
+\paragraph{Design rationale.}
+The strict precedence (Layer~1 $\succ$ Layer~2) is essential.
+A naive belief-only grouping strategy (GiGPO with belief hash instead of
+observation hash) \emph{decreases} performance by 3.1 percentage points
+in our ablation (Section~\ref{sec:ablation}), for three reasons:
+(i) early in training, model-generated beliefs are noisy, creating
+incorrect group assignments;
+(ii) belief features are \emph{endogenous}---they shift as the policy
+updates, producing non-stationary grouping targets;
+(iii) coarse belief clusters can merge steps with genuinely different
+environment states.
+HiBO mitigates all three issues by using the stable, exogenous observation
+hash as the primary grouping signal and relying on beliefs only as a fallback
+for the steps that observation hashing cannot group.
+
+\paragraph{Signal recovery.}
+Let $p \approx 0.20$ be the fraction of steps with multi-sample observation
+groups, and $q \approx 0.70$ be the fraction of singleton steps that fall
+into a non-trivial belief group.
+The fraction of steps with non-zero step-level advantage under HiBO is:
+\begin{equation}
+  c_{\text{HiBO}} = p + (1-p)\cdot q \approx 0.76,
+  \label{eq:coverage}
+\end{equation}
+versus $c_{\text{GiGPO}} \approx p \approx 0.20$.
+Even discounting belief group signal quality by a factor $\eta = 0.70$
+(due to semantic approximation), the total effective learning signal scales
+as $p + \eta(1-p)q \approx 0.59N$ versus $pN \approx 0.20N$---a $\mathbf{3\times}$
+increase.
+
+
+\subsection{Innovation 2: Competence-Adaptive Belief Reward Curriculum}
+\label{sec:curriculum}
+
+The total per-step reward combines the environment reward with a weighted
+intrinsic belief reward:
+\begin{equation}
+  r_t = r_t^{\text{env}} + R_{\text{belief}}(b_t,\, \hat{b}_t,\, \mathbf{w}_t),
+  \label{eq:reward}
+\end{equation}
+where $b_t$ is the agent's generated belief, $\hat{b}_t$ is the ground-truth
+state, and $\mathbf{w}_t$ is the component weight vector at epoch $t$.
+
+\paragraph{Belief reward components.}
+The intrinsic reward has four components:
+\begin{equation}
+  R_{\text{belief}} =
+    \alpha \,r_{\text{prog}} +
+    \beta  \,r_{\text{cons}} +
+    \gamma \,r_{\text{expl}} +
+    \delta \,r_{\text{fmt}},
+  \label{eq:belief_reward}
+\end{equation}
+with default weights $(\alpha,\beta,\gamma,\delta) = (0.5,\, 0.3,\, 0.2,\, 0.1)$.
+$r_{\text{prog}}$ rewards subgoal advancement; $r_{\text{cons}}$ rewards
+belief--action consistency; $r_{\text{expl}}$ rewards novel observations;
+$r_{\text{fmt}}$ rewards structural output compliance.
+
+\paragraph{Adaptive base weight.}
+The curriculum weight $w_t \in [0.05, 1.0]$ decreases as the agent's
+validation success rate $\text{SR}_t$ approaches a target threshold
+$\tau = 0.90$:
+\begin{equation}
+  w_t = \max\!\Bigl(0.05,\;\; 1 - \Bigl(\frac{\text{SR}_t}{\tau}\Bigr)^{\!\alpha}\Bigr),
+  \quad \alpha = 2.0.
+  \label{eq:adaptive_weight}
+\end{equation}
+The quadratic exponent produces a slow initial decay that accelerates as the
+agent approaches proficiency, with a cosine floor that provides a
+training-epoch lower bound in the absence of validation feedback.
+
+\paragraph{Differential component decay.}
+Each component $c$ applies the base weight raised to a component-specific
+exponent $\gamma_c$:
+\begin{equation}
+  w_t^{(c)} = w_t^{\,\gamma_c},
+  \quad
+  \gamma_{\text{prog}} = 0.7,\;\;
+  \gamma_{\text{cons}} = 1.0,\;\;
+  \gamma_{\text{expl}} = 2.0,\;\;
+  \gamma_{\text{fmt}} = 0.
+  \label{eq:differential}
+\end{equation}
+At $w_t = 0.5$ (approximately epoch~25): \textsc{Progress} retains 62\%,
+\textsc{Consistency} retains 50\%, \textsc{Exploration} retains only 25\%.
+By epoch~40, \textsc{Exploration} retains $\leq 6\%$ of its initial weight.
+
+The rationale follows reward shaping theory~\citep{ng1999policy}: belief
+rewards are not potential-based and therefore introduce policy bias
+$\propto w_t$.
+The $r_{\text{expl}}$ component has the lowest alignment with household task
+objectives (which require depth-first action sequences, not breadth-first
+exploration) and thus the highest bias; it receives the fastest decay.
+The $r_{\text{prog}}$ component directly tracks subgoal completion and is
+well-aligned with the extrinsic reward; it is preserved longest.
+
+
+\subsection{Innovation 3: Structured Belief Prompting}
+\label{sec:belief_prompt}
+
+At every step, the agent is instructed to produce output in the format:
+\begin{small}
+\begin{verbatim}
+<belief>{"world_model_update": {"found_objects": {...},
+  "inventory": [...], "cleared_receptacles": [...]},
+  "task_progress_update": {"current_subgoal": "...",
+  "subgoal_status": "...", "evidence": "..."},
+  "exploration_map_update": {"newly_visited": [...],
+  "next_priority": [...]}}</belief>
+<reasoning>...</reasoning>
+<action>go to fridge 1</action>
+\end{verbatim}
+\end{small}
+The structured JSON template serves three simultaneous functions:
+\textbf{(i)} as a \emph{cognitive scaffold} that forces systematic environmental
+state tracking, improving action quality;
+\textbf{(ii)} as the \emph{grouping signal} for HiBO's Layer~2, where
+$\phi(i)$ in Eq.~\eqref{eq:belief_abstract} is extracted from the JSON;
+\textbf{(iii)} as the \emph{basis} for the intrinsic reward components
+in Eq.~\eqref{eq:belief_reward}.
+
+This multi-functional design creates a tight coupling: structured belief
+prompting is a \emph{necessary precondition} for HiBO---without it, the
+JSON fields required for semantic abstraction are unavailable and HiBO
+degrades to pure GiGPO.
+The prompt format is adapted to each environment (Section~\ref{sec:webshop}).
+
+\subsection{Combined Advantage and Training Objective}
+
+The final combined advantage follows GiGPO's formulation (Eq.~\eqref{eq:gigpo})
+with $A_{\text{step}}$ replaced by HiBO-computed step advantages.
+The policy is updated by PPO with additional stabilization:
+asymmetric clipping ($\epsilon_{\text{low}}=0.2$, $\epsilon_{\text{high}}=0.28$),
+clip-covariance entropy protection (bounds $[0.0, 0.3]$), KL regularization
+($\beta = 0.01$, low-variance KL estimator), and invalid action penalty
+($\lambda = 0.1$).
+Algorithm~\ref{alg:rebel} summarizes the complete training procedure.
+
+\begin{algorithm}[t]
+\caption{ReBel Training}
+\label{alg:rebel}
+\begin{algorithmic}[1]
+\REQUIRE SFT-initialized policy $\pi_\theta$, environment $\mathcal{E}$, prompts $\mathcal{D}$
+\STATE Initialize running success rate $\hat{r} \leftarrow 0$
+\FOR{epoch $= 1, \ldots, T$}
+  \STATE $w_t \leftarrow \textsc{AdaptiveWeight}(\hat{r},\, \tau,\, \alpha)$ \hfill\COMMENT{Eq.~\ref{eq:adaptive_weight}}
+  \STATE Collect rollouts: for each prompt $p \in \mathcal{D}$, generate $n$ trajectories
+  \STATE For each step $i$: parse $(b_i, \phi_i, a_i)$ from output; compute $r_i^{\text{env}} + R_{\text{belief}}(\ldots, w_t)$
+  \STATE Compute $A_{\text{episode}}$ via GRPO group normalization
+  \STATE \textbf{HiBO:} assign each step to Layer-1 obs group if $|{\cal G}_1| \geq 2$, else Layer-2 belief group
+  \STATE Compute $A_{\text{step}}$ via within-group normalization; form $A_{\text{total}}$ (Eq.~\ref{eq:gigpo})
+  \STATE Update $\pi_\theta$ via PPO with asymmetric clipping, entropy protection, KL penalty
+  \IF{validation epoch}
+    \STATE $\hat{r} \leftarrow \text{EMA}(\hat{r},\, \text{val\_SR},\, \beta{=}0.3)$
+  \ENDIF
+\ENDFOR
+\RETURN $\pi_\theta$
+\end{algorithmic}
+\end{algorithm}
+
+
+% =============================================================================
+\section{Experiments}
+\label{sec:experiments}
+% =============================================================================
+
+\input{sections/experiments}
+
+
+% =============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% =============================================================================
+
+We presented ReBel, a reinforcement learning framework for LLM agents that
+addresses the singleton group problem in step-level credit assignment.
+By hierarchically combining observation-based and belief-based grouping (HiBO),
+we recover step-level learning signal from 76\% of all training steps---versus
+only 20\% for existing methods.
+A competence-adaptive belief reward curriculum with differential component decay
+provides dense feedback that accelerates early learning while provably converging
+to the unbiased optimal policy.
+Structured belief prompting ties these components together as both the source of
+grouping signals and the basis for intrinsic reward computation.
+Together, the three innovations yield 95.3\% peak success rate on ALFWorld
+(+13.3\% over GRPO, +3.9\% over the best GiGPO variant) and 75.4\% on WebShop,
+demonstrating that principled exploitation of model-generated belief states is
+a powerful lever for multi-step agent learning.
+
+\textbf{Limitations.}
+ReBel requires the agent to produce structured belief output, which necessitates
+a cold-start SFT phase and increases output length ($\sim$30\% more tokens
+than \texttt{<think>} format).
+The semantic belief abstraction (Eq.~\ref{eq:belief_abstract}) is currently
+hand-designed per environment; a learned abstraction could improve generality.
+Experiments are conducted on 1.5B-parameter models; scaling behavior to larger
+models warrants future investigation.
+
+\textbf{Future work.}
+Natural extensions include: (i) learning the belief abstraction end-to-end
+rather than through hand-crafted features; (ii) extending HiBO to multi-agent
+settings where shared belief states across agents could further reduce singleton
+prevalence; (iii) applying ReBel to environments with richer observation spaces
+such as vision-language tasks.
+
+
+\bibliographystyle{abbrvnat}
+\bibliography{refs}
+
+
+% =============================================================================
+\appendix
+% =============================================================================
+
+\section{Full Hyperparameter Configuration}
+\label{app:config}
+
+\input{sections/appendix_config}
+
+\section{Additional Ablation Results}
+\label{app:ablation}
+
+\input{sections/appendix_ablation}
+
+\end{document}

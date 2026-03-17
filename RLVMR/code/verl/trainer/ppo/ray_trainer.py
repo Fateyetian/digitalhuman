@@ -80,6 +80,7 @@ class AdvantageEstimator(str, Enum):
     BDRS = 'bdrs'
     ReBel = 'rebel'  # New: Belief-based grouping for advantage estimation
     ReBelHiBO = 'rebel_hibo'  # V11: Hierarchical Belief-Observation grouping
+    GraPO = 'grapo'           # V12: Graph-based path-level causal credit assignment
 
 
 @dataclass
@@ -486,6 +487,76 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
             data.meta_info['hibo_belief_fallback_ratio'] = stats['belief_fallback_ratio']
             data.meta_info['hibo_obs_mean_size'] = stats['obs_mean_size']
             data.meta_info['hibo_belief_mean_size'] = stats['belief_mean_size']
+
+    # ------------------------------------------------------------------ #
+    # V12: GraPO — Graph-based Path-Level Causal Credit Assignment        #
+    # ------------------------------------------------------------------ #
+    elif adv_estimator == AdvantageEstimator.GraPO:
+        from rebel.grapo_grouping import compute_grapo_outcome_advantage
+
+        # Validate required fields
+        if 'step_rewards' not in data.batch:
+            raise ValueError(
+                "GraPO requires step_rewards (discounted returns). "
+                "Ensure compute_step_discounted_returns is called before compute_advantage."
+            )
+        if 'belief_abstract' not in data.non_tensor_batch:
+            raise ValueError(
+                "GraPO requires belief_abstract in non_tensor_batch. "
+                "Ensure semantic_belief_abstract is computed during rollout."
+            )
+
+        # Read GraPO configuration from meta_info (set by trainer config)
+        grapo_step_advantage_w   = float(data.meta_info.get('grapo_step_advantage_w', 0.5))
+        grapo_mode               = str(data.meta_info.get('grapo_mode', 'mean_norm'))
+        grapo_min_anchor_size    = int(data.meta_info.get('grapo_min_anchor_group_size', 2))
+        grapo_env_type           = str(data.meta_info.get('grapo_env_type', 'alfworld'))
+        grapo_gamma              = float(data.meta_info.get('gamma', 1.0))
+        grapo_summarize          = bool(data.meta_info.get('grapo_summarize', False))
+
+        # Raw rewards needed for WebShop cumulative-return computation
+        raw_rewards = (
+            data.non_tensor_batch['rewards']
+            if grapo_env_type == 'webshop'
+            else None
+        )
+
+        advantages, returns, grapo_details = compute_grapo_outcome_advantage(
+            token_level_rewards  = data.batch['token_level_rewards'],
+            step_rewards         = data.batch['step_rewards'],
+            eos_mask             = data.batch['response_mask'],
+            anchor_obs           = data.non_tensor_batch['anchor_obs'],
+            belief_abstracts     = data.non_tensor_batch['belief_abstract'],
+            traj_uids            = data.non_tensor_batch['traj_uid'],
+            uid_array            = data.non_tensor_batch['uid'],
+            raw_rewards          = raw_rewards,
+            epsilon              = 1e-6,
+            step_advantage_w     = grapo_step_advantage_w,
+            mode                 = grapo_mode,
+            min_anchor_group_size = grapo_min_anchor_size,
+            env_type             = grapo_env_type,
+            gamma                = grapo_gamma,
+            summarize            = grapo_summarize,
+        )
+
+        data.batch['advantages'] = advantages
+        data.batch['returns']    = returns
+        data.meta_info['episode_advantages'] = grapo_details['episode_advantages']
+        data.meta_info['step_advantages']    = grapo_details['step_advantages']
+
+        # Log GraPO grouping statistics to meta_info for WandB / console logging
+        if 'grapo_stats' in grapo_details:
+            gs = grapo_details['grapo_stats']
+            data.meta_info['grapo_num_groups']           = gs['num_groups']
+            data.meta_info['grapo_mean_group_size']      = gs['mean_group_size']
+            data.meta_info['grapo_coverage']             = gs['coverage']
+            data.meta_info['grapo_layer1_obs_ratio']     = gs['layer1_obs_ratio']
+            data.meta_info['grapo_layer2_belief_ratio']  = gs['layer2_belief_ratio']
+            data.meta_info['grapo_layer3_path_ratio']    = gs['layer3_path_ratio']
+            data.meta_info['grapo_layer0_singleton_ratio'] = gs['layer0_singleton_ratio']
+            data.meta_info['grapo_median_group_size']    = gs['median_group_size']
+            data.meta_info['grapo_std_group_size']       = gs['std_group_size']
+
     else:
         raise NotImplementedError
     return data
@@ -564,7 +635,8 @@ class RayPPOTrainer(object):
         elif self.config.algorithm.adv_estimator in [
                 AdvantageEstimator.GRPO, AdvantageEstimator.REINFORCE_PLUS_PLUS, AdvantageEstimator.REMAX,
                 AdvantageEstimator.RLOO, AdvantageEstimator.GiGPO, AdvantageEstimator.RLVMR,
-                AdvantageEstimator.BDRS, AdvantageEstimator.ReBel, AdvantageEstimator.ReBelHiBO
+                AdvantageEstimator.BDRS, AdvantageEstimator.ReBel, AdvantageEstimator.ReBelHiBO,
+                AdvantageEstimator.GraPO
         ]:
             self.use_critic = False
         else:
@@ -1366,6 +1438,19 @@ class RayPPOTrainer(object):
                             gamma=self.config.algorithm.gamma
                         )
                         batch.batch['step_rewards'] = step_rewards_tensor
+
+                    # V12: GraPO needs step discounted returns (same pipeline as GiGPO/HiBO)
+                    if self.config.algorithm.adv_estimator == AdvantageEstimator.GraPO:
+                        step_rewards_tensor = core_gigpo.compute_step_discounted_returns(
+                            batch=batch,
+                            gamma=self.config.algorithm.gamma
+                        )
+                        batch.batch['step_rewards'] = step_rewards_tensor
+                        # Pass env_type and gamma into meta_info for compute_advantage
+                        batch.meta_info['grapo_env_type'] = str(
+                            self.config.algorithm.get('grapo_env_type', 'alfworld')
+                        )
+                        batch.meta_info['gamma'] = float(self.config.algorithm.gamma)
                     
                     batch = adjust_batch(self.config, batch)
 
@@ -1436,6 +1521,16 @@ class RayPPOTrainer(object):
                                 print(f"[V8] Applying task weights with success rates: {self.task_success_rates}")
                             else:
                                 batch.meta_info['rebel_task_success_rates'] = {}
+
+                        # V12: Inject GraPO config into meta_info before compute_advantage
+                        if self.config.algorithm.adv_estimator == AdvantageEstimator.GraPO:
+                            grapo_cfg = self.config.algorithm.get('grapo', {})
+                            batch.meta_info['grapo_step_advantage_w']    = float(grapo_cfg.get('step_advantage_w', 0.5))
+                            batch.meta_info['grapo_mode']                = str(grapo_cfg.get('mode', 'mean_norm'))
+                            batch.meta_info['grapo_min_anchor_group_size'] = int(grapo_cfg.get('min_anchor_group_size', 2))
+                            batch.meta_info['grapo_env_type']            = str(grapo_cfg.get('env_type', 'alfworld'))
+                            batch.meta_info['grapo_summarize']           = bool(grapo_cfg.get('summarize', False))
+                            batch.meta_info['gamma']                     = float(self.config.algorithm.gamma)
 
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,

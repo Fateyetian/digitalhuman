@@ -1,0 +1,18 @@
+{
+  "round": 4,
+  "status": "completed",
+  "last_score": 8.5,
+  "last_verdict": "almost",
+  "score_trajectory": [6.0, 7.0, 8.0, 8.5],
+  "writing_at_ceiling": true,
+  "pending_experiments": [
+    "Exp-A [CRITICAL]: Multi-seed ALFWorld (>=3 seeds) for GRPO/GiGPO/GiGPO+Belief/ReBel",
+    "Exp-B [CRITICAL]: Compact near-factorial ablation {exact-hash,HiBO} x {no-reward,belief-reward}",
+    "Exp-C [IMPORTANT]: Multi-seed V11 targeted ablations x3 seeds",
+    "Exp-D [IMPORTANT]: WebShop baselines (GRPO, GiGPO, GiGPO+Belief x3 seeds)",
+    "Exp-E [USEFUL]: Coverage vs learning signal analysis from existing logs",
+    "Exp-F [USEFUL]: No-JSON prompting ablation",
+    "Exp-G [USEFUL]: Output-length and token-cost report"
+  ],
+  "timestamp": "2026-03-16T15:30:00"
+}
