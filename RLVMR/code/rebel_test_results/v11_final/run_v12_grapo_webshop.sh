@@ -50,6 +50,7 @@ USE_DIFFERENTIAL_DECAY=${USE_DIFFERENTIAL_DECAY:-true}
 DECAY_METHOD=${DECAY_METHOD:-adaptive}
 ROLLOUT_N=${ROLLOUT_N:-16}
 SAVE_TRAJECTORIES=${SAVE_TRAJECTORIES:-true}
+SAVE_FREQ=${SAVE_FREQ:-50}        # set to 9999 to effectively disable checkpoint saving
 
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
@@ -214,7 +215,7 @@ BASE_ARGS=(
     "trainer.experiment_name=${FULL_EXP_NAME}"
     "trainer.n_gpus_per_node=${NUM_GPUS}"
     "trainer.nnodes=1"
-    "trainer.save_freq=50"
+    "trainer.save_freq=${SAVE_FREQ}"
     "trainer.test_freq=5"
     "trainer.total_epochs=${EPOCHS}"
     "trainer.default_local_dir=${RESULTS_DIR}/checkpoints"
@@ -234,6 +235,10 @@ fi
 # ======================== GraPO-specific parameters ========================
 if [ "$ADV_ESTIMATOR" = "grapo" ]; then
     BASE_ARGS+=(
+        # Override gamma=1.0 from BASE_ARGS: discounting gives buy-step ~1.3x
+        # more credit than search steps, matching GiGPO temporal structure.
+        # Without this, CumR[t]=r_T for all t → zero temporal gradient.
+        "algorithm.gamma=0.95"
         "+algorithm.grapo.env_type=${GRAPO_ENV_TYPE}"
         "+algorithm.grapo.step_advantage_w=${GRAPO_STEP_ADVANTAGE_W}"
         "+algorithm.grapo.min_anchor_group_size=${GRAPO_MIN_ANCHOR_SIZE}"

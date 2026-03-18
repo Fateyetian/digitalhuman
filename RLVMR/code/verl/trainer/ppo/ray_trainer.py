@@ -500,43 +500,40 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, step_a
                 "GraPO requires step_rewards (discounted returns). "
                 "Ensure compute_step_discounted_returns is called before compute_advantage."
             )
-        if 'belief_abstract' not in data.non_tensor_batch:
-            raise ValueError(
-                "GraPO requires belief_abstract in non_tensor_batch. "
-                "Ensure semantic_belief_abstract is computed during rollout."
-            )
 
         # Read GraPO configuration from meta_info (set by trainer config)
         grapo_step_advantage_w   = float(data.meta_info.get('grapo_step_advantage_w', 0.5))
         grapo_mode               = str(data.meta_info.get('grapo_mode', 'mean_norm'))
         grapo_min_anchor_size    = int(data.meta_info.get('grapo_min_anchor_group_size', 2))
         grapo_env_type           = str(data.meta_info.get('grapo_env_type', 'alfworld'))
-        grapo_gamma              = float(data.meta_info.get('gamma', 1.0))
+        grapo_gamma              = float(data.meta_info.get('gamma', 0.95))
         grapo_summarize          = bool(data.meta_info.get('grapo_summarize', False))
 
-        # Raw rewards needed for WebShop cumulative-return computation
-        raw_rewards = (
-            data.non_tensor_batch['rewards']
-            if grapo_env_type == 'webshop'
-            else None
+        # True graph GraPO uses only anchor_obs + traj_uid + step_rewards.
+        # belief_abstracts and raw_rewards are no longer needed but kept for
+        # API compatibility (passed as None if not present).
+        belief_abstracts = data.non_tensor_batch.get('belief_abstract', None)
+        belief_abstracts_arr = (
+            belief_abstracts if belief_abstracts is not None
+            else np.empty(len(data.non_tensor_batch['anchor_obs']), dtype=object)
         )
 
         advantages, returns, grapo_details = compute_grapo_outcome_advantage(
-            token_level_rewards  = data.batch['token_level_rewards'],
-            step_rewards         = data.batch['step_rewards'],
-            eos_mask             = data.batch['response_mask'],
-            anchor_obs           = data.non_tensor_batch['anchor_obs'],
-            belief_abstracts     = data.non_tensor_batch['belief_abstract'],
-            traj_uids            = data.non_tensor_batch['traj_uid'],
-            uid_array            = data.non_tensor_batch['uid'],
-            raw_rewards          = raw_rewards,
-            epsilon              = 1e-6,
-            step_advantage_w     = grapo_step_advantage_w,
-            mode                 = grapo_mode,
+            token_level_rewards   = data.batch['token_level_rewards'],
+            step_rewards          = data.batch['step_rewards'],
+            eos_mask              = data.batch['response_mask'],
+            anchor_obs            = data.non_tensor_batch['anchor_obs'],
+            belief_abstracts      = belief_abstracts_arr,
+            traj_uids             = data.non_tensor_batch['traj_uid'],
+            uid_array             = data.non_tensor_batch['uid'],
+            raw_rewards           = None,
+            epsilon               = 1e-6,
+            step_advantage_w      = grapo_step_advantage_w,
+            mode                  = grapo_mode,
             min_anchor_group_size = grapo_min_anchor_size,
-            env_type             = grapo_env_type,
-            gamma                = grapo_gamma,
-            summarize            = grapo_summarize,
+            env_type              = grapo_env_type,
+            gamma                 = grapo_gamma,
+            summarize             = grapo_summarize,
         )
 
         data.batch['advantages'] = advantages

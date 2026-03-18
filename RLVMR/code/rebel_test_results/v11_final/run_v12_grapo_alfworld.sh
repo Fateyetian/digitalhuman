@@ -20,9 +20,10 @@
 set -e
 
 # ======================== 基本参数 ========================
-NUM_GPUS=${NUM_GPUS:-8}
+NUM_GPUS=${NUM_GPUS:-4}
 EPOCHS=${EPOCHS:-100}
 SEED=${SEED:-42}
+SAVE_FREQ=${SAVE_FREQ:-25}        # set to 9999 to effectively disable checkpoint saving
 
 # ======================== 实验标识 ========================
 EXP_ID=${EXP_ID:?"ERROR: EXP_ID is required (M1-M5/A1-A6)"}
@@ -215,7 +216,7 @@ BASE_ARGS=(
     "trainer.experiment_name=${FULL_EXP_NAME}"
     "trainer.n_gpus_per_node=${NUM_GPUS}"
     "trainer.nnodes=1"
-    "trainer.save_freq=25"
+    "trainer.save_freq=${SAVE_FREQ}"
     "trainer.test_freq=5"
     "trainer.total_epochs=${EPOCHS}"
     "trainer.default_local_dir=${RESULTS_DIR}/checkpoints"
